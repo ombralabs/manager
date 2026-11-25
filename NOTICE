@@ -1,0 +1,21 @@
+Ombra Desktop (ombralabs/manager)
+Copyright 2026 Ombra Labs (https://ombrabrowser.dev)
+
+This product includes software developed at Ombra Labs
+(https://github.com/ombralabs).
+
+License:
+This repository is licensed under the GNU General Public License v3.0 only
+(GPL-3.0-only). See the LICENSE file for the full text.
+
+Trademarks:
+The "Ombra" name, the Ombra logo, and related marks are trademarks of
+Ombra Labs. The GNU General Public License v3.0 does not grant permission to
+use the trade names, trademarks, service marks, or product names of Ombra Labs,
+except as required for reasonable and customary use in describing the origin
+of the Work.
+
+External components:
+Compiled Ombra Chromium engine binaries downloaded at runtime from
+https://github.com/ombralabs/ombra/releases are separate works distributed
+under their own terms.
