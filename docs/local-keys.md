@@ -1,33 +1,27 @@
-# Local keys and profile data
+# Локальное хранение без Keychain
 
-The local catalog takes an application data directory and keeps the SQLite database in `ombra.db`. Desktop 1.2.1 also keeps each browser directory under `profiles/<id>/`. Its default application data directory depends on the platform.
+Все сборки используют локальные файлы ключей. Новый запуск и новая установка не создают записей в Keychain, Credential Manager или Secret Service. Зависимость `keyring` оставлена только для чтения старых ключей при переносе.
 
-| Platform | Default directory |
-| --- | --- |
-| macOS | `~/Library/Application Support/Ombra` |
-| Windows | `%LOCALAPPDATA%\Ombra` |
-| Linux | `$XDG_DATA_HOME/Ombra` when the variable is an absolute path, otherwise `~/.local/share/Ombra` |
+- `secrets.key` в каталоге данных Ombra: ключ существующего формата SQLite-секретов (пароли профилей и прокси, TOTP, cookies, ключи API/Google/провайдеров, старые refresh-токены, данные задач).
+- `vault-device.key` рядом с `security.json`: ключ устройства для ранее включённой локальной APFS-защиты.
+- `vault-secrets.key` внутри смонтированного тома: ключ SQLite защищённого хранилища. Прежний JSON-формат файла читается без преобразования.
 
-| File | Purpose |
-| --- | --- |
-| `secrets.key` | 32-byte key for encrypted fields in the ordinary SQLite store, including profile and proxy passwords, per-profile authenticator secrets, cookie values and the Local API key. |
-| `vault-device.key` | Device key for an existing protected macOS installation. It lives alongside `security.json`. |
-| `vault-secrets.key` | SQLite field-encryption key inside the mounted vault. The original JSON-string representation is also supported. |
+Файлы записываются атомарно, без замены существующего ключа, под межпроцессным замком. На Unix каталог имеет права `0700`, файл — `0600`; символические ссылки не читаются. На Windows используются права каталога пользователя. Повреждённый файл не заменяется случайным ключом.
 
-SQLite uses XChaCha20-Poly1305 with a fresh nonce for each encrypted value. In an ordinary installation the key lives beside the database. A process that can read both files can decrypt those fields. Browser history, site storage and ordinary profile metadata are outside this field-level encryption. A [macOS vault](profile-security.md) additionally protects the profile files while its volume is unmounted.
+## Перенос старой базы
 
-## Opening an existing database
+При отсутствии `secrets.key` приложение читает зашифрованные значения базы без изменения данных. Подходящий `dev-secrets.key` можно использовать только после проверки всех значений. Если он не подходит, старый ключ читается из системной записи `Ombra / secrets-key`, проверяется и сохраняется в файл. Только после этого открывается обычное ядро. Для пустой базы или базы без зашифрованных значений сразу создаётся локальный ключ.
 
-A fresh installation creates a local key without writing to the operating system's credential store. If an older database has encrypted fields and its local key is missing, the migration reads those fields in read-only mode. It tries the old development key, if present, then the legacy system credential `Ombra / secrets-key`. A candidate must decrypt every stored encrypted value before it is saved. macOS may ask for access to the legacy key on this first migration.
+macOS может один раз запросить доступ к старому ключу. Отказ, отсутствие ключа, несовместимые данные или ошибка записи оставляют исходную базу и Keychain без изменений. После успешного переноса повторные запуски читают локальный файл и не обращаются в Keychain. Старая системная запись не удаляется, чтобы сохранить возможность отката. После добавления новых секретов в версии с локальным ключом откат к старой сборке допустим только при совпадении ключей; иначе нужна резервная копия данных до обновления.
 
-If access is denied or the old data cannot be decrypted, opening stops and the original database is preserved. The migration retains the old system credential. Subsequent starts use the local file. An empty database, or one with no encrypted values, needs no system credential.
+Для старого APFS-хранилища обычная разблокировка однократно переносит запись `Ombra.ProfileVault` в `vault-device.key`. Альтернатива при потере системного ключа — пароль и неиспользованный код восстановления: создаётся новый локальный ключ и обновляется оболочка. Пароль, TOTP и одноразовые коды продолжают проверяться. Сам зашифрованный том не отключается и не удаляется обновлением.
 
-Key creation and migration hold an interprocess lock. The application writes a temporary file and publishes it atomically without replacing an existing key. A corrupt key file produces an error. On Unix, key directories and files are restricted to their owner with modes `0700` and `0600`, and key files are opened without following symbolic links. Windows uses the user directory's access controls.
+## Границы защиты
 
-For older macOS vaults, a normal unlock in Desktop 1.2.1 can import the previous device key from the `Ombra.ProfileVault` Keychain entry. A recovery unlock can create a replacement device key with the storage password and an unused recovery code. Mounting these vaults belongs to the original desktop application.
+Файл ключа находится рядом с локальными данными. Шифрование отдельных значений сохраняется для совместимости формата и **не защищает от процесса, имеющего доступ к файлам пользователя**. Обычные локальные профили не получают сквозное шифрование за счёт этого файла.
 
-## Backup and restore
+Ключи нужно включать в приватную резервную копию данных приложения. Их нельзя включать в публичные логи, экспорт отдельных профилей или облачные снимки: облачная схема должна использовать собственные ключи.
 
-Close the desktop app and its browsers before copying the application data directory to a private backup. Keep the database, profile directories and their matching keys together. After adding encrypted data, an older build can read it only if it uses the same key. A backup taken before an upgrade preserves the earlier state.
+## Проверка
 
-For a protected installation, include the complete `Profiles.sparsebundle`, `security.json` and local key files. Keep the storage password and an unused recovery code available for restoring on another Mac. An ordinary profile archive contains only the selected profile. [Profile security and recovery](profile-security.md).
+`cargo test --lib store::local_key` проверяет первый запуск без Keychain, миграцию без изменений базы, повторный запуск, отказ в доступе, неверный и повреждённый ключ, несовместимый debug-ключ, все шифруемые поля, права, ссылки и одновременный запуск процессов. `cargo test --lib security::` проверяет прежнюю защиту, сохранение локального ключа устройства после перезапуска и восстановление после потери файла.

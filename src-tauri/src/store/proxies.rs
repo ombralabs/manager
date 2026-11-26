@@ -133,7 +133,7 @@ impl fmt::Debug for ProxyCredentials {
 /// Колонки (kind, host, port, username, password_enc) как в таблице.
 type ProxyRow = (String, String, u16, Option<String>, Option<Vec<u8>>);
 
-const COLUMNS: &str =
+const COLUMNS: &str = 
     "id, kind, host, port, username, password_enc IS NOT NULL, note, enabled, checked_at, check_ok, exit_ip, country";
 
 impl Store {

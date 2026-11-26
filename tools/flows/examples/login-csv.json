@@ -1,0 +1,33 @@
+{
+  "format": "ombra-flow/1",
+  "name": "Вход из CSV",
+  "group": "Примеры",
+  "remark": "Вход в тестовую форму с логином и паролем из таблицы задачи: колонки login и pass, либо параметры. Укажите свой сайт в site: пример ожидает страницу /login и элементы #user, #pass, #go и #hello. Адаптируйте их в редакторе. Результат — приветствие и снимок экрана. Пароль передавайте таблицей или параметром, не вписывайте в поле узла: поле пишется в журнал как записано.",
+  "variables": [
+    { "name": "site", "type": "string", "default": "http://flow.ombra.test", "description": "Сайт со страницей /login" },
+    { "name": "login", "type": "string", "default": "", "description": "Колонка login таблицы" },
+    { "name": "pass", "type": "string", "default": "", "description": "Колонка pass таблицы" }
+  ],
+  "settings": { "after_tabs": "clear", "after_browser": "quit" },
+  "nodes": [
+    { "id": "start", "op": "start" },
+    { "id": "open", "op": "web.goto", "description": "Страница входа", "config": { "url": "${site}/login" } },
+    { "id": "user", "op": "web.input", "description": "Логин", "config": { "target": { "by": "css", "selector": "#user" }, "content": "${login}", "interval_ms": 20 } },
+    { "id": "secret", "op": "web.input", "description": "Пароль", "config": { "target": { "by": "css", "selector": "#pass" }, "content": "${pass}", "interval_ms": 20 } },
+    { "id": "go", "op": "web.click", "description": "Войти", "config": { "target": { "by": "css", "selector": "#go" } } },
+    { "id": "wait", "op": "wait.element", "description": "Кабинет открылся", "config": { "target": { "by": "css", "selector": "#hello" }, "timeout_ms": 15000 } },
+    { "id": "hello", "op": "data.element", "description": "Приветствие", "config": { "target": { "by": "css", "selector": "#hello" }, "save_to": "greeting" } },
+    { "id": "shot", "op": "web.screenshot", "description": "Снимок кабинета" },
+    { "id": "out", "op": "proc.vars", "description": "Итог", "config": { "mode": "export", "names": ["greeting"] } }
+  ],
+  "edges": [
+    { "from": "start", "to": "open" },
+    { "from": "open", "to": "user" },
+    { "from": "user", "to": "secret" },
+    { "from": "secret", "to": "go" },
+    { "from": "go", "to": "wait" },
+    { "from": "wait", "to": "hello" },
+    { "from": "hello", "to": "shot" },
+    { "from": "shot", "to": "out" }
+  ]
+}

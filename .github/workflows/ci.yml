@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   frontend:
-    name: Vue typecheck and unit tests
+    name: Vue typecheck, tests and build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -24,34 +24,56 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck and test
-        run: npm run check
+      - name: Typecheck and unit tests
+        run: npm run check:web
 
       - name: Build frontend
         run: npm run build
 
+      - name: Release script tests
+        run: node --test tools/release/*.node-test.mjs
+
   rust:
-    name: Rust catalog and downloader tests
+    name: Rust tests and clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Linux D-Bus development headers
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libdbus-1-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            xclip \
+            wl-clipboard
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: src-tauri -> target
+
+      - name: Ensure frontend dist placeholder exists
+        run: mkdir -p dist
 
       - name: Run cargo tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Run cargo clippy
+        run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings

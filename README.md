@@ -1,51 +1,54 @@
-# Ombra Desktop
+# Ombra Manager (Ombra Desktop)
 
-Ombra Desktop is a local profile manager with a native browser downloader. You can create profiles, search by name, note or number, and edit names and notes. Moving a profile to Trash keeps its files on disk and lets you restore the profile later. Profile management works offline.
+Local, open-source anti-detect profile manager and browser workspace built with Tauri, Rust, and Vue 3. Runs 100% locally with no account sign-in or external licensing server required.
 
-The app opens the existing ordinary Ombra data directory automatically. Close any other app that holds the same catalog before starting it. [Data locations, key migration and backups](docs/local-keys.md).
+For the compiled **Ombra Chromium** browser binaries and Node.js / Python automation SDKs, see **[ombralabs/ombra](https://github.com/ombralabs/ombra)**.
 
-| Source | Use |
-| --- | --- |
-| [Rust catalog](src-tauri/Cargo.toml) | Open an ordinary local SQLite catalog, manage profiles and organize them with groups, tags, labels and bookmarks. |
-| [Vue controls](src/components/) | Import form fields, buttons, dialogs, the group palette and the tag editor. Use the [base styles](src/styles/base.css) and the [English and Russian messages](src/i18n/). |
+## Features
 
-The app uses `Store::open_local`, which holds the catalog lock and loads the matching local encryption key. For an existing encrypted APFS vault, use Desktop 1.2.1 to unlock or recover the vault. [Vault recovery](docs/profile-security.md).
-
-## Install the browser
-
-Use **Download browser** in the browser section below the profiles. **Check for updates** looks for the current stable browser release; **Update browser** installs a newer version. Progress and cancellation are available, and profile management remains usable during the download. Starting Desktop reads the installed browser locally and makes no automatic release request.
-
-The downloader uses public [GitHub Releases](https://github.com/ombralabs/ombra/releases) without a GitHub token or CDN fallback. It verifies the pinned Ed25519 signature, release tag, platform, minimum Desktop version, archive size and SHA-256 before extraction. Downloads require the release repository to be public. Connection or verification errors leave the existing browser installed and allow another attempt.
-
-Browser versions are staged and installed under `engines/versions/` in the app's data directory. Existing versions and profile files are preserved. **Installation location** shows the installed executable. Available release platforms are macOS ARM64, Linux x64 and Windows x64; an unsupported platform displays an error. This downloader installs the browser; profile launch and vault migration remain separate from this catalog.
+- **Profiles, Groups, Tags & Trash:** Full SQLite-backed profile catalog with customizable browser fingerprints (OS, GPU, CPU/RAM, screen, timezone, language, WebRTC, canvas/audio noise, geolocation, storage quota), humanize persona presets and preview (`ombra-humanize`), credentials & built-in TOTP generator, start URLs, bookmarks, custom flags, bulk create/edit/clone, CSV import/export, encrypted archive import/export (`.tar.gz`), and soft-delete trash.
+- **Browser Engine Management:** Downloads Ed25519-signed Ombra Chromium releases directly from public [GitHub Releases (`ombralabs/ombra`)](https://github.com/ombralabs/ombra/releases) with SHA-256 verification, immutable version folders (`engines/versions/<version>/`), version switching, rollback, and local archive import. Supports Chromium 158+ (`Ombra.app` / `ombra` / `ombra.exe`) and legacy `Chromium.app` / `chrome` layouts.
+- **Proxies, Local Relay & GeoIP:** HTTP / HTTPS / SOCKS5 proxy manager with bulk import, health & GeoIP checks (auto-resolving timezone/language/WebRTC), direct-connection mode, exclusive proxy locks, local per-profile authenticating relay, and live per-profile traffic & connection logs.
+- **Local API (AdsPower v1/v2 Compatible):** Localhost HTTP API (`127.0.0.1`) with optional API key for starting/stopping profiles, querying CDP WebSocket endpoints, managing profiles/groups/cookies/extensions, and driving sessions from Playwright/Puppeteer.
+- **Window Synchronizer:** Mirrors mouse clicks, typing, scrolling, navigation, tabs, and page dialogs from a master browser window to follower windows in **Full Copy** or **Varied** (randomized human-like delays) mode, with per-window pause/release/resume.
+- **Visual RPA & CLI (`ombra flow`):** Node-based visual workflow editor, template library, multi-threaded task runner, CSV/Excel/Google Sheets table data sources, execution journal, live debugger, and standalone headless CLI (`ombra flow`).
+- **Extensions & Cookies:** Extension library (Chrome Web Store download + local `.crx`/`.zip`/unpacked folder), extension sets per profile/group, and JSON/Netscape cookie import/export with live CDP injection.
+- **Local Encryption & Security:** Per-secret encryption with local key storage (see [docs/local-keys.md](docs/local-keys.md)) and optional macOS encrypted APFS vault with TOTP 2FA (see [docs/profile-security.md](docs/profile-security.md)).
 
 ## Development
 
-From this directory, use the pinned Rust toolchain and Node.js 22 LTS (22.12+), 24 LTS or 26+. Linux builds use pkg-config and the D-Bus development headers for the legacy keyring reader. On Debian or Ubuntu, the packages are `pkg-config` and `libdbus-1-dev`.
+Prerequisites: Node.js 22+, Rust toolchain from [`rust-toolchain.toml`](rust-toolchain.toml), and [Tauri v2 system prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```sh
-cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm ci
-npm run check
+npm run check:web
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+```
+
+Run the desktop app in development mode:
+
+```sh
 npm run tauri -- dev
 ```
 
-The Rust tests use temporary directories and SQLite databases. The Vue check runs the TypeScript compiler and component tests. To use the catalog from another Rust crate, add a path dependency on `src-tauri`. [Profile operations with a Rust example](docs/profiles.md).
+Build release installers (see [docs/BUILDING.md](docs/BUILDING.md)):
 
-## Build installers
+```sh
+npm run build:desktop -- darwin-arm64   # or darwin-x64, windows-x64, linux-x64
+```
 
-Use the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/) for the platform. For an Apple silicon DMG, run the macOS command. For the other listed installers, use the corresponding platform build environment.
+## Documentation
 
-| Installer | Command |
-| --- | --- |
-| macOS arm64 DMG | `npm run tauri -- build --target aarch64-apple-darwin --bundles dmg -- --locked` |
-| Linux Debian package | `npm run tauri -- build --bundles deb -- --locked` |
-| Windows NSIS setup | `npm run tauri -- build --bundles nsis -- --locked` |
-
-Set `OMBRA_DESKTOP_DATA_DIR` to an absolute path before launching the executable to work with a test catalog or a backup copy. The app will create a catalog if the directory is empty.
+- [docs/BUILDING.md](docs/BUILDING.md) — Building installers and engine release format
+- [docs/automation-cli.md](docs/automation-cli.md) — `ombra flow` CLI reference
+- [docs/automation-cdp-methods.md](docs/automation-cdp-methods.md) — CDP methods used by automation
+- [docs/local-keys.md](docs/local-keys.md) — Local encryption key storage
+- [docs/profile-security.md](docs/profile-security.md) — Encrypted macOS APFS vault and 2FA
+- [docs/humanize-manual-check.md](docs/humanize-manual-check.md) — Humanize input verification guide
 
 ## License
 
-Ombra Desktop is licensed under the [GNU General Public License v3.0 only (`GPL-3.0-only`)](LICENSE). You are free to use, study, modify, and distribute this software (including for commercial use), provided that any distributed derivative work or software incorporating this code also discloses its source code under the same license.
+Licensed under the **GNU General Public License v3.0 only (`GPL-3.0-only`)**. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Compiled Ombra Chromium engine binaries downloaded at runtime from [`ombralabs/ombra`](https://github.com/ombralabs/ombra) releases are distributed separately under their own terms. See [NOTICE](NOTICE) for copyright and trademark details.
+Compiled Ombra Chromium engine binaries downloaded at runtime from `ombralabs/ombra` are separate works distributed under their own license terms.

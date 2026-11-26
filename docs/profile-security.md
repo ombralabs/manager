@@ -1,26 +1,55 @@
-# Profile security in Desktop 1.2.1
+# Защита профилей
 
-Desktop 1.2.1 opens an existing macOS profile vault stored in the AES-256 encrypted APFS image `Profiles.sparsebundle`. The local catalog library works with ordinary profile data. Use the full desktop app on macOS for a protected installation. Its settings show **Local encrypted storage** for installations that already have a vault.
+Этот документ описывает локальное APFS-хранилище профилей с паролем и 2FA. Переход с Keychain описан в [local-keys.md](local-keys.md).
 
-## Unlocking and recovery
+Настройка: **Настройки → Безопасность пользователя**. Защита включается добровольно. До её включения доступны все функции: профили, настройки, RPA, Local API и неинтерактивный CLI. На странице профилей постоянно показывается баннер с предложением подключить 2FA; он не перекрывает интерфейс и не запрещает работу. После включения защиты каждый новый сеанс требует пароль и новый код из аутентификатора либо пароль и одноразовый код восстановления. В течение одного сеанса повторное подтверждение для каждого профиля не требуется.
 
-- Enter the storage password and six-digit code at **Profiles are locked**, then select **Unlock profiles**. One unlock opens the workspace for that session. A six-digit code is valid on 30-second time steps with one step of clock tolerance on either side. Reuse of an accepted step is rejected across restarts.
-- If the authenticator is unavailable, select **Cannot access your authenticator?** and use the storage password and a recovery code. Each code works once. Eight codes are issued per set. On a different Mac, or when the device key is missing, this unlock can establish a new local device key.
-- After a recovery unlock, **Settings → Security & data → Local encrypted storage** lets you replace the authenticator. For five minutes you can start replacement by re-entering the storage password. Confirm the replacement authenticator with its own code and save the newly issued recovery codes.
-- Changing the password or replacing the authenticator normally requires the current password and a fresh authenticator or recovery code. A new storage password must have at least 12 characters. Each change invalidates the previous set of recovery codes. After five failed authentication attempts, the retry delay starts at 30 seconds and increases to a maximum of 15 minutes. The delay survives restarting the app.
+## Первая настройка и перенос
 
-## Storage and migration
+1. Пользователь задаёт пароль от 12 символов.
+2. Добавляет QR-код или ручной ключ в аутентификатор и подтверждает код.
+3. Сохраняет восемь кодов восстановления и подтверждает это в интерфейсе.
+4. Кнопка «Включить 2FA и перезапустить» сохраняет настройку, закрывает браузеры профилей и перезапускает приложение, чтобы прежнее ядро отпустило базу.
+5. После входа с паролем и новым кодом приложение переносит базу, папки Chromium, расширения, результаты RPA и журналы профилей в зашифрованный том.
 
-The application supplies a random volume password to macOS `hdiutil` over standard input. It derives a separate key from the user's password with PBKDF2-HMAC-SHA256, a random salt and 600,000 iterations. The ordinary unlock uses this derived key and the device key to open an XChaCha20-Poly1305 encrypted payload. The app checks the authenticator code before mounting the image. Recovery codes have separate encrypted copies of the payload, each bound to the storage password and that code.
+Активация требует действий владельца в интерфейсе: пароль и аутентификатор не назначаются автоматически. До добровольной активации данные хранятся и используются как прежде. Баннер и установка обновления сами по себе не включают полное шифрование профилей.
 
-The volume mounts in a private temporary directory outside Application Support. It holds the database, Chromium directories and cache, extensions, working files and persistent profile logs. The mount location keeps macOS Chromium cache files inside the vault. Outside the volume, `ui.json` can retain the language for the unlock screen.
+Копии проверяются по SHA-256. Исходники удаляются только после успешного копирования всех элементов; состояние переноса сохраняется атомарно. После сбоя перенос продолжается по тому же паролю и 2FA. Старый внешний кэш Chromium удаляется после подтверждённого переноса. Если данные ещё использует другой процесс или обнаружена неподдерживаемая символическая ссылка, перенос останавливается с сохранением исходников.
 
-When an existing installation has a pending migration, the app locks the old data, copies the files, verifies them with SHA-256 and saves progress atomically. It checks the SQLite field key inside the vault before removing the original data and the old external browser cache. A busy source or an unsupported symbolic link stops the copy. After an interruption, open the app with the same storage password and a fresh code to resume.
+## Хранение и факторы
 
-On exit a guard process waits for the owner to finish, stops remaining browsers and unmounts the image. Opening a corrupt or incomplete vault fails with its data preserved. Windows and Linux support ordinary profile storage. The 1.2.1 APFS implementation requires macOS.
+- `Profiles.sparsebundle` в папке данных — зашифрованный AES-256 том APFS, создаваемый системным `hdiutil`. На нём находятся SQLite и все рабочие папки Chromium, включая локальные хранилища сайтов и кэш.
+- Прежний ключ отдельных секретов базы импортируется в `vault-secrets.key` внутри тома до удаления исходников. После переноса восстановление паролей прокси, cookies и API-ключа не зависит от старого Mac или отладочного файла ключа.
+- Том монтируется в закрытую папку временного каталога пользователя вне `Application Support`, чтобы Chromium не выносил кэш в незашифрованный `~/Library/Caches`.
+- Случайный пароль тома не передаётся в аргументах процесса или окружении: используется стандартный ввод `hdiutil`. Он не совпадает с паролем пользователя.
+- Пароль пользователя преобразуется PBKDF2-HMAC-SHA256 с 600 000 итераций и случайной солью. Ключ оболочки зависит также от случайного ключа устройства в приватном файле `vault-device.key` рядом с `security.json`. Старый ключ из Keychain импортируется один раз при обычной разблокировке; вход с кодом восстановления позволяет создать новый локальный ключ без Keychain.
+- Оболочки ключей и данные аутентификатора защищены XChaCha20-Poly1305 с аутентифицированным контекстом версии формата. В `security.json` нет открытых паролей, ключа TOTP или кодов восстановления.
+- TOTP: случайный 160-битный ключ, SHA-1, 6 цифр, шаг 30 секунд, окно ±1 шага. Уже принятый шаг не принимается снова после перезапуска. После пяти ошибок включается сохраняемая задержка от 30 секунд с увеличением до 15 минут.
+- Восемь кодов восстановления имеют по 128 бит случайности. Каждый вместе с паролем открывает отдельную оболочку ключа, расходуется один раз и позволяет создать локальный ключ устройства на другом устройстве. Смена пароля или аутентификатора создаёт новый набор и отзывает прежний.
 
-## Local API
+Смена пароля и замена аутентификатора требуют повторного ввода текущего пароля и свежего кода аутентификатора либо неиспользованного кода восстановления, даже в разблокированном сеансе. После входа с кодом восстановления приложение открывает настройки: в течение пяти минут для начала замены потерянного аутентификатора достаточно повторно ввести пароль. Новый аутентификатор всё равно нужно подтвердить его кодом и сохранить новый набор резервных кодов. Это работает и при использовании последнего старого резервного кода. Отключение обязательной защиты не предусмотрено. Секреты временной настройки находятся только в памяти и убираются из интерфейса после завершения или отмены.
 
-In the original desktop app, **Settings → Integrations → Local API** controls the IPv4 loopback listener. Its default address is `127.0.0.1:45678`. A local client can reach the listener when it is enabled. Turn on **Require an API key** to authenticate clients. **New key** rotates the credential, so update any local client that uses the previous key.
+## Завершение сеанса и автоматизация
 
-The server checks the Host header and browser-origin metadata before dispatching requests. When a key is configured, it checks the bearer credential on every route. If the configured key cannot be read, startup fails. For a protected installation, the local API and commands that read profile data become available only after vault unlock. Closing the app closes the listener.
+В обычном режиме Local API и Tauri-команды доступны сразу. После включения защиты API запускается только после разблокировки, а прямые команды до этого получают `SecurityLocked`; это ограничение не зависит от маршрута интерфейса. Ручной запуск, RPA, New Browser и API используют ядро, открытое внутри одного подтверждённого сеанса.
+
+Выход закрывает Local API и браузеры. Отдельный процесс-сторож ждёт завершения владельца, закрывает оставшиеся браузерные процессы и снимает том, в том числе после аварийного завершения окна. При следующем старте оставшийся том закрывается до разблокировки. Ошибка открытия не вызывает возврат к старой незашифрованной базе.
+
+До включения защиты `ombra flow` работает без запроса кода, в том числе рядом с окном. В защищённом режиме отдельный процесс создаёт собственный сеанс и запрашивает пароль и код без отображения ввода. Для настройки защиты используется только интерфейс. Последний резервный код CLI не расходует: его нужно использовать в окне Ombra для привязки нового аутентификатора. Если защищённое окно Ombra уже занимает папку данных, внешняя автоматизация использует Local API разблокированного окна; второй прямой сеанс CLI не открывается. Неинтерактивный защищённый CLI без подтверждения доступа отклоняется.
+
+Язык экрана входа сохраняется отдельно в `ui.json`; содержимое профилей туда не записывается. Папка приложения с локальными ключами и том должны входить в план резервного копирования; для восстановления на другом устройстве нужны образ, `security.json`, пароль и один неиспользованный код восстановления. Экспорты в выбранные пользователем внешние файлы имеют собственную защиту формата и не становятся частью тома автоматически.
+
+После включения защиты постоянные журналы приложения и CLI также находятся на зашифрованном томе; до разблокировки они не создаются. В обычном режиме журналы остаются в прежней папке данных. В отладочной сборке дополнительно остаётся вывод в терминал. Пользовательские аргументы не могут менять папку профиля или выводить дисковый кэш за пределы хранилища.
+
+## Проверка
+
+Протокол факторов, повтор кодов, восстановление, смена пароля, задержка и отказ от незашифрованной базы проверяются обычными тестами. Проверки настоящего тома выполняются на отдельных временных данных:
+
+```sh
+cd src-tauri
+cargo test --lib real_vault_ -- --ignored --nocapture
+```
+
+Проверки подтверждают недоступность файлов после снятия тома, отказ неверного пароля, отсутствие открытого содержимого в файлах образа, перенос SQLite и папок браузера, а также снятие тома после завершения владельца.
+
+Основания: [RFC 6238](https://datatracker.ietf.org/doc/html/rfc6238), [OWASP MFA](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html), [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html). Команды шифрования и монтирования проверены по справке установленного macOS `hdiutil`.

@@ -30,19 +30,11 @@ impl Store {
 
 /// Замена списка внутри чужой транзакции (создание и правка профиля).
 pub(crate) fn set_bookmarks_tx(conn: &rusqlite::Connection, id: &str, list: &[Bookmark]) -> Result<(), StoreError> {
-    let valid = |bookmark: &Bookmark| {
-        let url = bookmark.url.trim();
-        (1..=BOOKMARK_TITLE_MAX).contains(&bookmark.title.trim().chars().count())
-            && (url.starts_with("http://") || url.starts_with("https://"))
-    };
-    if list.len() > BOOKMARKS_MAX || !list.iter().all(valid) {
-        return Err(StoreError::Invalid("bookmarks"));
-    }
     conn.execute("DELETE FROM bookmarks WHERE profile_id = ?1", [id])?;
     for (position, b) in list.iter().enumerate() {
         conn.execute(
             "INSERT INTO bookmarks (profile_id, position, title, url) VALUES (?1, ?2, ?3, ?4)",
-            params![id, position as i64, b.title.trim(), b.url.trim()],
+            params![id, position as i64, b.title, b.url],
         )?;
     }
     Ok(())
@@ -66,10 +58,5 @@ mod tests {
         assert_eq!(store.profile_bookmarks(&rec.id).unwrap(), [b("z"), b("a")]);
         store.set_profile_bookmarks(&rec.id, &[b("m")]).unwrap();
         assert_eq!(store.profile_bookmarks(&rec.id).unwrap(), [b("m")]);
-        for invalid in [vec![b("")], vec![b("x"); BOOKMARKS_MAX + 1],
-            vec![Bookmark { title: "Local".into(), url: "file:///tmp".into() }]] {
-            assert!(matches!(store.set_profile_bookmarks(&rec.id, &invalid), Err(StoreError::Invalid("bookmarks"))));
-            assert_eq!(store.profile_bookmarks(&rec.id).unwrap(), [b("m")]);
-        }
     }
 }

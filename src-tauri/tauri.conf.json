@@ -1,34 +1,48 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Ombra Desktop",
+  "productName": "Ombra",
   "version": "1.2.3",
-  "identifier": "org.ombralabs.ombra-desktop",
-  "mainBinaryName": "ombra-desktop",
+  "identifier": "app.ombra.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 1420 --strictPort",
-    "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
-    "features": ["app"]
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "Ombra Desktop",
-        "width": 960,
-        "height": 660,
-        "minWidth": 530,
-        "minHeight": 440
+        "title": "Ombra",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1280,
+        "minHeight": 800,
+        "resizable": true,
+        "fullscreen": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'",
-      "devCsp": "default-src 'self'; connect-src ipc: http://ipc.localhost ws://127.0.0.1:1420; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+      "csp": null
     }
   },
   "bundle": {
     "active": true,
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Ombra Labs",
+    "category": "Productivity",
+    "shortDescription": "Browser profile management and automation",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    }
   }
 }

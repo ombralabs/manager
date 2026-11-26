@@ -1,5 +1,7 @@
 pub mod bookmarks;
+pub mod cookies;
 pub mod extensions;
+pub mod flows;
 pub mod groups;
 pub mod profiles;
 pub mod profile_labels;
@@ -7,9 +9,10 @@ pub mod proxies;
 pub mod secrets;
 pub(crate) mod local_key;
 pub mod tags;
+pub mod tasks;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
 use rusqlite::functions::FunctionFlags;
 use secrets::{Secret, SecretBox};
 use serde::{Deserialize, Serialize};
@@ -32,13 +35,11 @@ pub enum StoreError {
     Keychain(String),
     #[error("файл: {0}")]
     Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Lock(#[from] crate::lock::LockError),
-    #[error("protected profile storage must be opened in the original Desktop")]
-    Protected,
-    #[error("unsupported profile database version {0}")]
-    Schema(i64),
-
+    /// Последний пакет задачи не закончен, и его процесс Ombra жив.
+    #[error("задача ещё выполняется (процесс {0})")]
+    TaskRunning(u32),
+    #[error("задача изменена — откройте её заново")]
+    TaskChanged,
 }
 
 const MIGRATIONS: &[&str] = &[
@@ -77,7 +78,7 @@ pub const GOOGLE_KEY_KEY: &str = "google.service_key";
 /// Что делать при закрытии приложения с запущенными профилями.
 pub const ON_QUIT_KEY: &str = "app.on_quit";
 /// Refresh-токен входа через Ombra (зашифрован); пусто — входа нет.
-const LICENSE_REFRESH_KEY: &str = "license.refresh_token";
+pub const LICENSE_REFRESH_KEY: &str = "license.refresh_token";
 
 /// Префикс зашифрованного значения настройки: дальше base64 от nonce и шифртекста `SecretBox`.
 const SECRET_PREFIX: &str = "enc:";
@@ -106,43 +107,14 @@ impl QuitAction {
 pub struct Store {
     conn: Mutex<Connection>,
     secrets: SecretBox,
-    _directory_lock: Option<crate::lock::DirLock>,
 }
 
 impl Store {
-    /// Open an ordinary Desktop data directory with its existing key and single-instance lock.
-    pub fn open_local(root: &Path) -> Result<Self, StoreError> {
-        let paths = crate::paths::Paths::new(root);
-        let lock = crate::lock::DirLock::acquire(root)?;
-        for marker in [paths.security_config(), paths.vault_image(), paths.vault_key_file()] {
-            match std::fs::symlink_metadata(marker) {
-                Ok(_) => return Err(StoreError::Protected),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        let database = paths.db();
-        match std::fs::symlink_metadata(&database) {
-            Ok(metadata) if metadata.is_file() => {
-                let conn = open_database(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-                conn.busy_timeout(BUSY_TIMEOUT)?;
-                schema_version(&conn)?;
-            }
-            Ok(_) => return Err(StoreError::Invalid("database")),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let key = local_key::profile_key(&paths)?;
-        let mut store = Self::open(&paths.db(), SecretBox::from_key(&key))?;
-        store._directory_lock = Some(lock);
-        Ok(store)
-    }
-
-    fn open(path: &Path, secrets: SecretBox) -> Result<Self, StoreError> {
+    pub fn open(path: &Path, secrets: SecretBox) -> Result<Self, StoreError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let conn = open_database(path, OpenFlags::default())?;
+        let conn = Connection::open(path)?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
         // Новую базу два процесса Ombra переводят в WAL одновременно: второй получает «база занята» сразу, без
         // `busy_timeout` (SQLite так обходит взаимную блокировку), поэтому — повторы в пределах того же времени.
@@ -176,7 +148,7 @@ impl Store {
         // Сборка до 008, открывшая базу версии 8, добавляет профили с `humanize_seed` по умолчанию 0: после возврата на эту
         // сборку у них был бы один почерк на всех. Ноль — «seed не задан»: каждому свой, как в миграции 008.
         conn.execute("UPDATE profiles SET humanize_seed = random() WHERE humanize_seed = 0", [])?;
-        let store = Self { conn: Mutex::new(conn), secrets, _directory_lock: None };
+        let store = Self { conn: Mutex::new(conn), secrets };
         // До 2В-2 ключ API хранился открытым. Шифруется здесь, а не SQL-миграцией: нужен ключ секретов.
         if store.encrypt_plain_setting(API_KEY_KEY)? {
             // Страница с открытым ключом могла остаться в WAL: страницы переносятся в базу, журнал обрезается.
@@ -199,7 +171,7 @@ impl Store {
         Ok(self.conn().query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
-    fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
         Ok(self
             .conn()
             .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
@@ -208,7 +180,7 @@ impl Store {
 
     /// Обычная настройка. Секретные (`API_KEY_KEY`) пишутся только своими методами
     /// с шифрованием — здесь `Invalid("setting")`.
-    fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
         if SECRET_KEYS.contains(&key) {
             return Err(StoreError::Invalid("setting"));
         }
@@ -285,6 +257,16 @@ impl Store {
         self.set_setting(ON_QUIT_KEY, action.as_str())
     }
 
+    /// Refresh-токен входа через Ombra; не расшифровался — `Crypto`.
+    pub fn license_refresh_token(&self) -> Result<Option<Secret>, StoreError> {
+        self.secret_setting(LICENSE_REFRESH_KEY)
+    }
+
+    /// `None` — выход.
+    pub fn set_license_refresh_token(&self, token: Option<&str>) -> Result<(), StoreError> {
+        self.set_secret_setting(LICENSE_REFRESH_KEY, token)
+    }
+
     /// `enc:<base64>` расшифровывается ключом секретов. Значение без префикса читается как открытое:
     /// так хранился ключ API до 2В-2. Пусто — `None`.
     pub(crate) fn secret_setting(&self, key: &str) -> Result<Option<Secret>, StoreError> {
@@ -338,26 +320,11 @@ fn write_setting(conn: &Connection, key: &str, value: &str) -> Result<(), StoreE
     Ok(())
 }
 
-// Resolve directory aliases such as /var -> /private/var on macOS, but never follow the database file itself.
-fn open_database(path: &Path, flags: OpenFlags) -> Result<Connection, StoreError> {
-    let name = path.file_name().ok_or(StoreError::Invalid("database"))?;
-    let parent = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let database = parent.canonicalize()?.join(name);
-    Ok(Connection::open_with_flags(database, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW)?)
-}
-
-fn schema_version(conn: &Connection) -> Result<i64, StoreError> {
-    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if !(0..=MIGRATIONS.len() as i64).contains(&current) {
-        return Err(StoreError::Schema(current));
-    }
-    Ok(current)
-}
-
-/// Read the version again under the write lock so concurrent upgrades run only once.
+/// Версия читается под замком записи: окно и `ombra flow`, стартовавшие одновременно, не выполнят одну миграцию дважды
+/// («table already exists»). Все миграции — одна транзакция.
 fn migrate(conn: &Connection) -> Result<(), StoreError> {
     let tx = conn.unchecked_transaction()?;
-    let current = schema_version(&tx)?;
+    let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     for (index, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         tx.execute_batch(sql)?;
         tx.execute_batch(&format!("PRAGMA user_version = {}", index + 1))?;
@@ -392,6 +359,13 @@ pub(crate) mod tests {
 
     pub(crate) fn memory_store() -> Store {
         Store::open_in_memory(test_box()).unwrap()
+    }
+
+    /// Значение секретной настройки, зашифрованное чужим ключом секретов, — как база, перенесённая с другой машины.
+    pub(crate) fn foreign_secret(value: &str) -> String {
+        let other = Store::open_in_memory(SecretBox::from_key(&[9u8; 32])).unwrap();
+        other.set_secret_setting("foreign", Some(value)).unwrap();
+        other.get_setting("foreign").unwrap().unwrap()
     }
 
     /// Значение настройки как есть, в обход `set_setting`: открытый ключ 2Б, чужой или испорченный секрет.
@@ -437,10 +411,12 @@ pub(crate) mod tests {
                 INSERT INTO flow_runs (batch_id, profile_id, serial, position, status, item_index) VALUES (1, 'a1', 1, 0, 'done', 0);").unwrap();
         }
         let store = Store::open(&path, test_box()).unwrap();
+        let tasks = store.task_rows().unwrap();
+        assert_eq!(tasks[0].queue.as_ref().unwrap().done, 1);
+        assert!(tasks[0].last.is_some());
         let headless: Option<bool> = store.conn().query_row("SELECT headless FROM flow_tasks WHERE id = 1", [], |row| row.get(0)).unwrap();
         assert_eq!(headless, None, "прежние задачи продолжают наследовать режим процесса");
-        let item: Option<i64> = store.conn().query_row("SELECT item_index FROM flow_runs WHERE batch_id = 1", [], |row| row.get(0)).unwrap();
-        assert_eq!(item, Some(0));
+        assert_eq!(store.run_rows(1).unwrap()[0].item_index, Some(0));
     }
 
     #[test]
@@ -457,10 +433,12 @@ pub(crate) mod tests {
                 INSERT INTO flow_runs (batch_id, profile_id, serial, position, status) VALUES (1, 'a1', 1, 0, 'done');").unwrap();
         }
         let store = Store::open(&path, test_box()).unwrap();
-        let previous: (String, String, Option<i64>) = store.conn().query_row(
-            "SELECT distribution, status, item_index FROM flow_tasks JOIN flow_batches ON task_id = flow_tasks.id JOIN flow_runs ON batch_id = flow_batches.id",
-            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
-        assert_eq!(previous, ("per_profile".into(), "done".into(), None));
+        let tasks = store.task_rows().unwrap();
+        assert_eq!(tasks[0].distribution, crate::flow::params::Distribution::PerProfile);
+        assert!(tasks[0].queue.is_none());
+        let runs = store.run_rows(1).unwrap();
+        assert_eq!(runs[0].status, crate::store::tasks::RunState::Done);
+        assert!(runs[0].item_index.is_none());
     }
 
     #[test]
@@ -484,13 +462,15 @@ pub(crate) mod tests {
         }
         let store = Store::open(&path, test_box()).unwrap();
         assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len() as i64);
-        let count: i64 = store.conn().query_row("SELECT count(DISTINCT humanize_seed) FROM profiles WHERE humanize = '{}'", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 2);
+        let a = store.get_profile("aaaaaa").unwrap().unwrap();
+        let b = store.get_profile("bbbbbb").unwrap().unwrap();
+        assert_eq!(a.humanize, crate::humanize::Humanize::default(), "включено и у прежних профилей");
+        assert_ne!(a.humanize_seed, b.humanize_seed);
     }
 
-    /// База сборки Э5 (версия 8): у её профилей модуль капч выключен (C54).
+    /// База сборки версии 8 мигрирует до актуальной схемы без ошибок.
     #[test]
-    fn humanize_era_profiles_get_the_captcha_module_off() {
+    fn v8_database_migrates_cleanly() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ombra.db");
         {
@@ -508,8 +488,33 @@ pub(crate) mod tests {
         }
         let store = Store::open(&path, test_box()).unwrap();
         assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len() as i64);
-        let stored: String = store.conn().query_row("SELECT captcha FROM profiles WHERE id='aaaaaa'", [], |r| r.get(0)).unwrap();
-        assert_eq!(stored, "{}");
+        assert_eq!(store.get_profile("aaaaaa").unwrap().unwrap().name, "Магазин");
+    }
+
+    #[test]
+    fn zero_seeds_of_an_older_build_get_their_own_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ombra.db");
+        let kept = {
+            let store = Store::open(&path, test_box()).unwrap();
+            let kept = store.create_profile(&crate::store::profiles::ProfileInput::new("Был", "{}"), 1).unwrap();
+            // Сборка до 008 не знает столбцов очеловечивания: её строки получают их значения по умолчанию.
+            for (id, serial) in [("aaaaaa", 101), ("bbbbbb", 102)] {
+                store
+                    .raw()
+                    .execute(
+                        "INSERT INTO profiles (id, serial, name, fingerprint, created_at) VALUES (?1, ?2, 'Старая', '{}', 1)",
+                        rusqlite::params![id, serial],
+                    )
+                    .unwrap();
+            }
+            kept
+        };
+        let store = Store::open(&path, test_box()).unwrap();
+        let a = store.get_profile("aaaaaa").unwrap().unwrap().humanize_seed;
+        let b = store.get_profile("bbbbbb").unwrap().unwrap().humanize_seed;
+        assert!(a != 0 && b != 0 && a != b, "{a} {b}");
+        assert_eq!(store.get_profile(&kept.id).unwrap().unwrap().humanize_seed, kept.humanize_seed, "заданный seed остаётся");
     }
 
     #[test]

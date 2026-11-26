@@ -2,7 +2,7 @@
 use super::{StoreError, secrets::SecretBox};
 use crate::paths::Paths;
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-use rusqlite::OpenFlags;
+use rusqlite::{Connection, OpenFlags};
 use std::{fs, io::{self, Read, Write}, path::Path};
 use zeroize::Zeroizing;
 
@@ -81,21 +81,19 @@ pub(crate) fn profile_key(paths: &Paths) -> Result<Key, StoreError> {
 }
 
 fn profile_key_with(paths: &Paths, legacy: impl FnOnce() -> Result<Key, StoreError>) -> Result<Key, StoreError> {
-    let destination = paths.local_key_file();
-    let key = load_with(&destination, &paths.root().join(".ombra-key.lock"), || {
-        let blobs = encrypted_values(&paths.db(), false)?;
+    let destination = if paths.is_protected() { paths.vault_key_file() } else { paths.local_key_file() };
+    load_with(&destination, &paths.data_root().join(".ombra-key.lock"), || {
+        let blobs = encrypted_values(&paths.db())?;
         // Development and release used different keys. Only reuse one if it opens ALL old values.
-        if let Some(key) = read_key(&paths.dev_key_file())? && opens_all(&key, &blobs) {
-            return Ok(key);
+        for candidate in [paths.local_key_file(), paths.dev_key_file()] {
+            if candidate != destination && let Some(key) = read_key(&candidate)?
+                && opens_all(&key, &blobs) { return Ok(key); }
         }
         if blobs.is_empty() { return new_key(); }
         let key = legacy()?;
         if !opens_all(&key, &blobs) { return Err(StoreError::Crypto); }
         Ok(key)
-    })?;
-    // A restored database and a separately restored key may come from different installations.
-    if !opens_all(&key, &encrypted_values(&paths.db(), true)?) { return Err(StoreError::Crypto); }
-    Ok(key)
+    })
 }
 
 fn opens_all(key: &[u8; 32], blobs: &[Vec<u8>]) -> bool {
@@ -104,9 +102,9 @@ fn opens_all(key: &[u8; 32], blobs: &[Vec<u8>]) -> bool {
 }
 
 /// Read-only, before opening/migrating Store. No new key for a database containing encrypted data.
-fn encrypted_values(path: &Path, first_only: bool) -> Result<Vec<Vec<u8>>, StoreError> {
+fn encrypted_values(path: &Path) -> Result<Vec<Vec<u8>>, StoreError> {
     if !path.try_exists()? { return Ok(vec![]); }
-    let conn = super::open_database(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let mut values = vec![];
     for (table, columns) in [
@@ -118,20 +116,11 @@ fn encrypted_values(path: &Path, first_only: bool) -> Result<Vec<Vec<u8>>, Store
         if !conn.table_exists(None, table)? { continue; }
         for column in columns {
             let mut statement = conn.prepare(&format!("SELECT {column} FROM {table} WHERE {column} IS NOT NULL"))?;
-            for row in statement.query_map([], |row| row.get::<_, Vec<u8>>(0))? {
-                values.push(row?);
-                if first_only { return Ok(values); }
-            }
+            for row in statement.query_map([], |row| row.get::<_, Vec<u8>>(0))? { values.push(row?); }
         }
     }
     if conn.table_exists(None, "settings")? {
-        // A stale account session is opaque to this catalog. Migration still verifies all old secrets.
-        let query = if first_only {
-            "SELECT value FROM settings WHERE substr(value, 1, 4) = 'enc:' AND key != 'license.refresh_token' LIMIT 1"
-        } else {
-            "SELECT value FROM settings WHERE substr(value, 1, 4) = 'enc:'"
-        };
-        let mut statement = conn.prepare(query)?;
+        let mut statement = conn.prepare("SELECT value FROM settings WHERE substr(value, 1, 4) = 'enc:'")?;
         for value in statement.query_map([], |row| row.get::<_, String>(0))? {
             values.push(B64.decode(&value?[4..]).map_err(|_| StoreError::Crypto)?);
         }
@@ -143,12 +132,11 @@ fn encrypted_values(path: &Path, first_only: bool) -> Result<Vec<Vec<u8>>, Store
 mod tests {
     use super::*;
     use crate::store::{Store, secrets::Secret};
-    use rusqlite::Connection;
 
     fn fixture(paths: &Paths, key: &[u8; 32]) {
         let store = Store::open(&paths.db(), SecretBox::from_key(key)).unwrap();
         store.set_api_key(Some("preserved-api-token")).unwrap();
-        store.set_secret_setting("legacy.key", Some("preserved-value")).unwrap();
+        store.set_license_refresh_token(Some("preserved-session")).unwrap();
     }
 
     fn no_legacy() -> Result<Key, StoreError> { panic!("must not access OS credentials") }
@@ -180,7 +168,7 @@ mod tests {
         assert_eq!(*key, *profile_key_with(&paths, no_legacy).unwrap());
         let store = Store::open(&paths.db(), SecretBox::from_key(&key)).unwrap();
         assert_eq!(store.api_key().unwrap().as_deref(), Some("preserved-api-token"));
-        assert_eq!(store.secret_setting("legacy.key").unwrap().unwrap().expose(), "preserved-value");
+        assert_eq!(store.license_refresh_token().unwrap().unwrap().expose(), "preserved-session");
     }
 
     #[test]
@@ -223,7 +211,7 @@ mod tests {
         conn.execute("INSERT INTO cookies VALUES (?1)", [&good]).unwrap();
         conn.execute("INSERT INTO flow_tasks VALUES (?1, ?2)", [&good, &bad]).unwrap();
         conn.execute("INSERT INTO settings VALUES ('captcha.key', ?1)", [format!("enc:{}", B64.encode(&good))]).unwrap();
-        assert_eq!(encrypted_values(&paths.db(), false).unwrap().len(), 7);
+        assert_eq!(encrypted_values(&paths.db()).unwrap().len(), 7);
         assert!(profile_key_with(&paths, || Ok(Zeroizing::new([7; 32]))).is_err());
         assert!(!paths.local_key_file().exists());
         conn.execute("UPDATE flow_tasks SET data_enc = ?1", [&good]).unwrap();

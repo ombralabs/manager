@@ -4,6 +4,7 @@ export const PREF_COLUMNS = 'ombra.profiles.columns'
 export const PREF_SIDEBAR_COLLAPSED = 'ombra.sidebar.collapsed'
 export const PREF_SETTINGS_SECTION = 'ombra.settings.section'
 export const PREF_PROFILE_GROUPS_COLLAPSED = 'ombra.profiles.groups.collapsed'
+export const PREF_OP_GROUPS_COLLAPSED = 'ombra.automation.palette.collapsed'
 
 /** Значение из `localStorage` (JSON). Нет, испорчено, не прошло `parse`, хранилище недоступно — `fallback`. */
 export function readPref<T>(key: string, parse: (raw: unknown) => T | null, fallback: T): T {

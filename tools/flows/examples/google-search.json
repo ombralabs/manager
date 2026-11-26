@@ -1,0 +1,1550 @@
+{
+  "format": "ombra-flow/1",
+  "name": "Google — поиск и переход на сайт",
+  "group": "Поиск и переходы",
+  "remark": "Поиск по keyword, сопоставление url и обход выдачи на глубину page_limit (1–20 страниц, по умолчанию 20). URL сравниваются по домену и пути без протокола, www, параметров и фрагмента. После совпадения: прокрутка вниз/вверх, случайная видимая HTTPS-ссылка того же сайта, повторная прокрутка и возврат. Если результатов нет, новая вкладка закрывается. Если нет совпадения или подходящих HTTPS-ссылок, процесс завершается. При CAPTCHA или согласии Google процесс ждёт до трёх минут и продолжает после проверки. Её может завершить обработчик капч профиля или пользователь. Браузер и прочие вкладки остаются открыты.",
+  "variables": [
+    {
+      "name": "keyword",
+      "type": "string",
+      "default": "",
+      "description": "Ключевая фраза для поиска Google"
+    },
+    {
+      "name": "url",
+      "type": "string",
+      "default": "",
+      "description": "Целевой домен или URL для нечёткого сопоставления"
+    },
+    {
+      "name": "page_limit",
+      "type": "number",
+      "default": 20,
+      "description": "Глубина поиска: от 1 до 20 страниц выдачи, по умолчанию 20"
+    }
+  ],
+  "settings": {
+    "after_tabs": "keep",
+    "after_browser": "keep",
+    "timeout_s": 1800
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "op": "start",
+      "description": "Начало",
+      "config": {},
+      "pos": [
+        300,
+        0
+      ]
+    },
+    {
+      "id": "init",
+      "op": "web.js",
+      "description": "Проверить keyword, url и глубину поиска",
+      "config": {
+        "code": "(function(){function address(value) {\n  const text = String(value ?? '').trim()\n  if (!text || /\\s/.test(text)) throw new Error('url: enter a valid website address')\n  const parsed = new URL(/^[a-z][a-z\\d+.-]*:/i.test(text) ? text : 'https://' + text)\n  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('url: use an HTTP(S) address without credentials')\n  return {\n    host: parsed.hostname.toLowerCase().replace(/\\.$/, '').replace(/^www\\./, ''),\n    port: parsed.port,\n    path: parsed.pathname.replace(/\\/+$/, '') || '/',\n  }\n}\nreturn (function initialize(keyword, url, page_limit = 20) {\n  if (typeof keyword !== 'string' || !keyword.trim()) throw new Error('keyword: enter a Google search query')\n  if (!Number.isInteger(page_limit) || page_limit < 1 || page_limit > 20) throw new Error('page_limit: enter a whole number from 1 to 20')\n  try { return { keyword: keyword.trim(), target: address(url) } }\n  catch (error) { throw new Error('url: ' + error.message.replace(/^url: /, '')) }\n})(keyword, url, page_limit);})()",
+        "inject": [
+          "keyword",
+          "url",
+          "page_limit"
+        ],
+        "save_to": "configuration"
+      },
+      "pos": [
+        300,
+        130
+      ]
+    },
+    {
+      "id": "target",
+      "op": "proc.field",
+      "description": "Адрес для сопоставления",
+      "config": {
+        "data": "${configuration}",
+        "key": "target",
+        "save_to": "target"
+      },
+      "pos": [
+        300,
+        260
+      ]
+    },
+    {
+      "id": "keyword",
+      "op": "proc.field",
+      "description": "Поисковая фраза",
+      "config": {
+        "data": "${configuration}",
+        "key": "keyword",
+        "save_to": "keyword"
+      },
+      "pos": [
+        300,
+        390
+      ]
+    },
+    {
+      "id": "new_tab",
+      "op": "web.new_tab",
+      "description": "Создать вкладку",
+      "config": {},
+      "pos": [
+        300,
+        520
+      ]
+    },
+    {
+      "id": "google",
+      "op": "web.goto",
+      "description": "Открыть Google",
+      "config": {
+        "url": "https://www.google.com/",
+        "timeout_ms": 45000
+      },
+      "pos": [
+        300,
+        650
+      ]
+    },
+    {
+      "id": "home_ready",
+      "op": "control.group",
+      "description": "Ожидать готовности Google, CAPTCHA или согласия",
+      "config": {
+        "name": "Google: ожидание до 3 минут"
+      },
+      "pos": [
+        300,
+        780
+      ],
+      "nodes": [
+        {
+          "id": "home_ready_mode",
+          "op": "proc.vars",
+          "description": "Режим ожидания Google",
+          "config": {
+            "vars": [
+              {
+                "name": "google_mode",
+                "type": "string",
+                "value": "home"
+              }
+            ]
+          },
+          "pos": [
+            300,
+            0
+          ]
+        },
+        {
+          "id": "home_ready_loop",
+          "op": "control.for_times",
+          "description": "Ждать до 180 секунд",
+          "config": {
+            "times": 180,
+            "index_to": "google_wait_index"
+          },
+          "pos": [
+            300,
+            130
+          ]
+        },
+        {
+          "id": "home_ready_reset",
+          "op": "proc.vars",
+          "description": "Сбросить прошлый ответ перед опросом",
+          "config": {
+            "vars": [
+              {
+                "name": "google_gate",
+                "type": "object",
+                "value": {
+                  "ready": false,
+                  "state": "loading"
+                }
+              }
+            ]
+          },
+          "pos": [
+            300,
+            260
+          ]
+        },
+        {
+          "id": "home_ready_sample",
+          "op": "web.js",
+          "description": "Проверить Google; при CAPTCHA ждать решения",
+          "config": {
+            "code": "(function(){function address(value) {\n  const text = String(value ?? '').trim()\n  if (!text || /\\s/.test(text)) throw new Error('url: enter a valid website address')\n  const parsed = new URL(/^[a-z][a-z\\d+.-]*:/i.test(text) ? text : 'https://' + text)\n  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('url: use an HTTP(S) address without credentials')\n  return {\n    host: parsed.hostname.toLowerCase().replace(/\\.$/, '').replace(/^www\\./, ''),\n    port: parsed.port,\n    path: parsed.pathname.replace(/\\/+$/, '') || '/',\n  }\n}\nfunction scoreLink(href, target) {\n  try {\n    const candidate = address(href)\n    if (candidate.port !== target.port || (candidate.host !== target.host && !candidate.host.endsWith('.' + target.host))) return 0\n    if (target.path !== '/' && candidate.path !== target.path && !candidate.path.startsWith(target.path + '/')) return 0\n    return (candidate.host === target.host ? 100 : 50) + (candidate.path === target.path ? 20 : 0)\n  } catch { return 0 }\n}\nfunction visibleLink(link) {\n  const style = getComputedStyle(link)\n  const rect = link.getBoundingClientRect()\n  for (let ancestor = link.parentElement; ancestor; ancestor = ancestor.parentElement) {\n    const parent = getComputedStyle(ancestor)\n    if (parent.display === 'none' || Number(parent.opacity || 1) === 0) return false\n  }\n  return !link.closest('[hidden], [inert], [aria-hidden=\"true\"], [aria-disabled=\"true\"]') &&\n    style.display !== 'none' && !['hidden', 'collapse'].includes(style.visibility) && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0\n}\nfunction googleState(mode) {\n  if (document.documentElement.hasAttribute('data-ombra-navigation')) return { ready: false, state: 'loading' }\n  if (location.hostname === 'consent.google.com' || [...document.querySelectorAll('form[action*=\"consent.google\"]')].some(visibleLink)) {\n    return { ready: false, state: 'consent' }\n  }\n  const response = document.querySelector('[name=\"g-recaptcha-response\"]')?.value?.trim()\n  const captcha = [...document.querySelectorAll('#captcha-form, iframe[src*=\"/recaptcha/\"]')].some(element => {\n    if (!visibleLink(element)) return false\n    if (element.tagName !== 'IFRAME') return !response\n    const rect = element.getBoundingClientRect()\n    if (rect.bottom <= 0 || rect.top >= innerHeight || rect.right <= 0 || rect.left >= innerWidth) return false\n    try {\n      const url = new URL(element.src, location.href)\n      return url.pathname.endsWith('/bframe') || (!response && url.pathname.endsWith('/anchor') && url.searchParams.get('size') !== 'invisible')\n    } catch { return false }\n  })\n  if (location.pathname.startsWith('/sorry') || captcha) return { ready: false, state: 'captcha' }\n  if (document.readyState !== 'complete' || !/(^|\\.)google\\.com$/.test(location.hostname)) return { ready: false, state: 'loading' }\n  if (mode === 'home') {\n    const box = document.querySelector('textarea[name=\"q\"], input[name=\"q\"]')\n    return { ready: Boolean(box && visibleLink(box)), state: box && visibleLink(box) ? 'home' : 'loading' }\n  }\n  const root = document.querySelector('#search, #rso, main, [role=\"main\"]')\n  const results = [...(root?.querySelectorAll('a[href]') ?? [])].some(link => link.querySelector('h3') && visibleLink(link))\n  const empty = /did not match any documents|no results found|ничего не найдено|не найдено (?:ни одного )?документа/i.test(document.body?.innerText || document.body?.textContent || '')\n  const ready = location.pathname === '/search' && (results || empty)\n  return { ready, state: ready ? 'results' : 'loading' }\n}\nfunction inspectSearch(target) {\n  const state = googleState('results')\n  if (!state.ready) return state\n  const root = document.querySelector('#search, #rso, main, [role=\"main\"]')\n  const links = [...(root?.querySelectorAll('a[href]') ?? [])].filter(link => link.querySelector('h3') && visibleLink(link))\n  const ranked = links.map(link => {\n    try {\n    let href = link.href\n    const redirect = new URL(href, location.href)\n    if (redirect.origin === location.origin && redirect.pathname === '/url') href = redirect.searchParams.get('q') || redirect.searchParams.get('url') || ''\n    return { href, score: scoreLink(href, target) }\n    } catch { return { href: '', score: 0 } }\n  }).filter(link => link.score > 0).sort((a, b) => b.score - a.score)\n  return { ...state, has_results: links.length > 0, matched_url: ranked[0]?.href ?? '' }\n}\nreturn (function pollGoogle(mode, target) {\n  return mode === 'results' ? inspectSearch(target) : googleState('home')\n})(google_mode, target);})()",
+            "inject": [
+              "google_mode",
+              "target"
+            ],
+            "save_to": "google_gate"
+          },
+          "pos": [
+            300,
+            390
+          ],
+          "on_error": "skip"
+        },
+        {
+          "id": "home_ready_ready",
+          "op": "proc.field",
+          "description": "Готов ли Google?",
+          "config": {
+            "data": "${google_gate}",
+            "key": "ready",
+            "save_to": "google_ready"
+          },
+          "pos": [
+            300,
+            520
+          ]
+        },
+        {
+          "id": "home_ready_if",
+          "op": "control.if",
+          "description": "Продолжить после проверки?",
+          "config": {
+            "variable": "google_ready",
+            "condition": "eq",
+            "value": true
+          },
+          "pos": [
+            300,
+            650
+          ]
+        },
+        {
+          "id": "home_ready_break",
+          "op": "control.break",
+          "description": "Google готов: продолжить процесс",
+          "config": {},
+          "pos": [
+            300,
+            780
+          ]
+        },
+        {
+          "id": "home_ready_pause",
+          "op": "wait.time",
+          "description": "Ожидание CAPTCHA, согласия или загрузки Google",
+          "config": {
+            "ms": 1000
+          },
+          "pos": [
+            300,
+            910
+          ]
+        },
+        {
+          "id": "home_ready_verify",
+          "op": "web.js",
+          "description": "Проверить срок ожидания Google",
+          "config": {
+            "code": "(function(){\nreturn (function requireGoogleReady(google_gate) {\n  if (!google_gate.ready) {\n    throw new Error(`Google: ${google_gate.state === 'loading' ? 'page did not become ready' : 'CAPTCHA or consent is still pending'} after 180 seconds. Complete the check in the profile, then retry.`)\n  }\n  return true\n})(google_gate);})()",
+            "inject": [
+              "google_gate"
+            ]
+          },
+          "pos": [
+            300,
+            1040
+          ]
+        },
+        {
+          "id": "home_ready_save",
+          "op": "proc.vars",
+          "description": "Сохранить готовый ответ Google",
+          "config": {
+            "vars": [
+              {
+                "name": "google_home",
+                "type": "object",
+                "value": "${google_gate}"
+              }
+            ]
+          },
+          "pos": [
+            300,
+            1170
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "home_ready_mode",
+          "to": "home_ready_loop",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "home_ready_loop",
+          "to": "home_ready_reset",
+          "port": "body",
+          "to_port": "in"
+        },
+        {
+          "from": "home_ready_reset",
+          "to": "home_ready_sample",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "home_ready_sample",
+          "to": "home_ready_ready",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "home_ready_ready",
+          "to": "home_ready_if",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "home_ready_if",
+          "to": "home_ready_break",
+          "port": "true",
+          "to_port": "in"
+        },
+        {
+          "from": "home_ready_if",
+          "to": "home_ready_pause",
+          "port": "false",
+          "to_port": "in"
+        },
+        {
+          "from": "home_ready_pause",
+          "to": "home_ready_loop",
+          "port": "next",
+          "to_port": "loop"
+        },
+        {
+          "from": "home_ready_loop",
+          "to": "home_ready_verify",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "home_ready_verify",
+          "to": "home_ready_save",
+          "port": "next",
+          "to_port": "in"
+        }
+      ]
+    },
+    {
+      "id": "search_box",
+      "op": "wait.element",
+      "description": "Найти поле поиска",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "textarea[name=\"q\"], input[name=\"q\"]"
+        },
+        "visible": true,
+        "timeout_ms": 15000
+      },
+      "pos": [
+        300,
+        910
+      ]
+    },
+    {
+      "id": "input",
+      "op": "web.input",
+      "description": "Ввести keyword",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "textarea[name=\"q\"], input[name=\"q\"]"
+        },
+        "content": "${keyword}",
+        "clear": true,
+        "interval_ms": 50
+      },
+      "pos": [
+        300,
+        1040
+      ]
+    },
+    {
+      "id": "submit_prepare",
+      "op": "web.js",
+      "description": "Подготовить ожидание выдачи",
+      "config": {
+        "code": "(function(){\nreturn (function prepareNavigation() {\n  const root = document.documentElement\n  const previous = location.href\n  root.setAttribute('data-ombra-navigation', 'pending')\n  const clear = () => { root.removeAttribute('data-ombra-navigation'); clearInterval(timer) }\n  const timer = setInterval(() => { if (location.href !== previous) clear() }, 100)\n  // A cached document may return with this marker after Go Back.\n  window.addEventListener('pageshow', clear, { once: true })\n  setTimeout(() => clearInterval(timer), 30000)\n})();})()",
+        "inject": []
+      },
+      "pos": [
+        300,
+        1170
+      ]
+    },
+    {
+      "id": "enter",
+      "op": "key.press",
+      "description": "Нажать Enter",
+      "config": {
+        "key": "Enter"
+      },
+      "pos": [
+        300,
+        1300
+      ]
+    },
+    {
+      "id": "submit_wait",
+      "op": "wait.element",
+      "description": "Дождаться новой страницы",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "html:not([data-ombra-navigation]) body"
+        },
+        "timeout_ms": 30000,
+        "save_to": "navigation_ready"
+      },
+      "pos": [
+        300,
+        1430
+      ]
+    },
+    {
+      "id": "submit_ready",
+      "op": "web.js",
+      "description": "Дождаться полной загрузки",
+      "config": {
+        "code": "(function(){async function waitReady() {\n  const deadline = Date.now() + 15000\n  let completeSince = 0\n  while (Date.now() < deadline) {\n    if (document.readyState === 'complete') {\n      completeSince ||= Date.now()\n      if (Date.now() - completeSince >= 500) return true\n    } else completeSince = 0\n    await new Promise(resolve => setTimeout(resolve, 100))\n  }\n  throw new Error('Page did not finish loading within 15 seconds')\n}\nreturn (async function navigationFinished(navigation_ready) {\n  if (!navigation_ready) throw new Error('The click did not navigate within 30 seconds')\n  return waitReady()\n})(navigation_ready);})()",
+        "inject": [
+          "navigation_ready"
+        ]
+      },
+      "pos": [
+        300,
+        1560
+      ],
+      "on_error": "skip"
+    },
+    {
+      "id": "pages",
+      "op": "control.for_times",
+      "description": "Проверить страницы до лимита page_limit",
+      "config": {
+        "times": "${page_limit}",
+        "index_to": "page_index"
+      },
+      "pos": [
+        300,
+        1690
+      ]
+    },
+    {
+      "id": "inspect",
+      "op": "control.group",
+      "description": "Ожидать готовности Google, CAPTCHA или согласия",
+      "config": {
+        "name": "Google: ожидание до 3 минут"
+      },
+      "pos": [
+        300,
+        1820
+      ],
+      "nodes": [
+        {
+          "id": "inspect_mode",
+          "op": "proc.vars",
+          "description": "Режим ожидания Google",
+          "config": {
+            "vars": [
+              {
+                "name": "google_mode",
+                "type": "string",
+                "value": "results"
+              }
+            ]
+          },
+          "pos": [
+            300,
+            0
+          ]
+        },
+        {
+          "id": "inspect_loop",
+          "op": "control.for_times",
+          "description": "Ждать до 180 секунд",
+          "config": {
+            "times": 180,
+            "index_to": "google_wait_index"
+          },
+          "pos": [
+            300,
+            130
+          ]
+        },
+        {
+          "id": "inspect_reset",
+          "op": "proc.vars",
+          "description": "Сбросить прошлый ответ перед опросом",
+          "config": {
+            "vars": [
+              {
+                "name": "google_gate",
+                "type": "object",
+                "value": {
+                  "ready": false,
+                  "state": "loading"
+                }
+              }
+            ]
+          },
+          "pos": [
+            300,
+            260
+          ]
+        },
+        {
+          "id": "inspect_sample",
+          "op": "web.js",
+          "description": "Проверить Google; при CAPTCHA ждать решения",
+          "config": {
+            "code": "(function(){function address(value) {\n  const text = String(value ?? '').trim()\n  if (!text || /\\s/.test(text)) throw new Error('url: enter a valid website address')\n  const parsed = new URL(/^[a-z][a-z\\d+.-]*:/i.test(text) ? text : 'https://' + text)\n  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('url: use an HTTP(S) address without credentials')\n  return {\n    host: parsed.hostname.toLowerCase().replace(/\\.$/, '').replace(/^www\\./, ''),\n    port: parsed.port,\n    path: parsed.pathname.replace(/\\/+$/, '') || '/',\n  }\n}\nfunction scoreLink(href, target) {\n  try {\n    const candidate = address(href)\n    if (candidate.port !== target.port || (candidate.host !== target.host && !candidate.host.endsWith('.' + target.host))) return 0\n    if (target.path !== '/' && candidate.path !== target.path && !candidate.path.startsWith(target.path + '/')) return 0\n    return (candidate.host === target.host ? 100 : 50) + (candidate.path === target.path ? 20 : 0)\n  } catch { return 0 }\n}\nfunction visibleLink(link) {\n  const style = getComputedStyle(link)\n  const rect = link.getBoundingClientRect()\n  for (let ancestor = link.parentElement; ancestor; ancestor = ancestor.parentElement) {\n    const parent = getComputedStyle(ancestor)\n    if (parent.display === 'none' || Number(parent.opacity || 1) === 0) return false\n  }\n  return !link.closest('[hidden], [inert], [aria-hidden=\"true\"], [aria-disabled=\"true\"]') &&\n    style.display !== 'none' && !['hidden', 'collapse'].includes(style.visibility) && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0\n}\nfunction googleState(mode) {\n  if (document.documentElement.hasAttribute('data-ombra-navigation')) return { ready: false, state: 'loading' }\n  if (location.hostname === 'consent.google.com' || [...document.querySelectorAll('form[action*=\"consent.google\"]')].some(visibleLink)) {\n    return { ready: false, state: 'consent' }\n  }\n  const response = document.querySelector('[name=\"g-recaptcha-response\"]')?.value?.trim()\n  const captcha = [...document.querySelectorAll('#captcha-form, iframe[src*=\"/recaptcha/\"]')].some(element => {\n    if (!visibleLink(element)) return false\n    if (element.tagName !== 'IFRAME') return !response\n    const rect = element.getBoundingClientRect()\n    if (rect.bottom <= 0 || rect.top >= innerHeight || rect.right <= 0 || rect.left >= innerWidth) return false\n    try {\n      const url = new URL(element.src, location.href)\n      return url.pathname.endsWith('/bframe') || (!response && url.pathname.endsWith('/anchor') && url.searchParams.get('size') !== 'invisible')\n    } catch { return false }\n  })\n  if (location.pathname.startsWith('/sorry') || captcha) return { ready: false, state: 'captcha' }\n  if (document.readyState !== 'complete' || !/(^|\\.)google\\.com$/.test(location.hostname)) return { ready: false, state: 'loading' }\n  if (mode === 'home') {\n    const box = document.querySelector('textarea[name=\"q\"], input[name=\"q\"]')\n    return { ready: Boolean(box && visibleLink(box)), state: box && visibleLink(box) ? 'home' : 'loading' }\n  }\n  const root = document.querySelector('#search, #rso, main, [role=\"main\"]')\n  const results = [...(root?.querySelectorAll('a[href]') ?? [])].some(link => link.querySelector('h3') && visibleLink(link))\n  const empty = /did not match any documents|no results found|ничего не найдено|не найдено (?:ни одного )?документа/i.test(document.body?.innerText || document.body?.textContent || '')\n  const ready = location.pathname === '/search' && (results || empty)\n  return { ready, state: ready ? 'results' : 'loading' }\n}\nfunction inspectSearch(target) {\n  const state = googleState('results')\n  if (!state.ready) return state\n  const root = document.querySelector('#search, #rso, main, [role=\"main\"]')\n  const links = [...(root?.querySelectorAll('a[href]') ?? [])].filter(link => link.querySelector('h3') && visibleLink(link))\n  const ranked = links.map(link => {\n    try {\n    let href = link.href\n    const redirect = new URL(href, location.href)\n    if (redirect.origin === location.origin && redirect.pathname === '/url') href = redirect.searchParams.get('q') || redirect.searchParams.get('url') || ''\n    return { href, score: scoreLink(href, target) }\n    } catch { return { href: '', score: 0 } }\n  }).filter(link => link.score > 0).sort((a, b) => b.score - a.score)\n  return { ...state, has_results: links.length > 0, matched_url: ranked[0]?.href ?? '' }\n}\nreturn (function pollGoogle(mode, target) {\n  return mode === 'results' ? inspectSearch(target) : googleState('home')\n})(google_mode, target);})()",
+            "inject": [
+              "google_mode",
+              "target"
+            ],
+            "save_to": "google_gate"
+          },
+          "pos": [
+            300,
+            390
+          ],
+          "on_error": "skip"
+        },
+        {
+          "id": "inspect_ready",
+          "op": "proc.field",
+          "description": "Готов ли Google?",
+          "config": {
+            "data": "${google_gate}",
+            "key": "ready",
+            "save_to": "google_ready"
+          },
+          "pos": [
+            300,
+            520
+          ]
+        },
+        {
+          "id": "inspect_if",
+          "op": "control.if",
+          "description": "Продолжить после проверки?",
+          "config": {
+            "variable": "google_ready",
+            "condition": "eq",
+            "value": true
+          },
+          "pos": [
+            300,
+            650
+          ]
+        },
+        {
+          "id": "inspect_break",
+          "op": "control.break",
+          "description": "Google готов: продолжить процесс",
+          "config": {},
+          "pos": [
+            300,
+            780
+          ]
+        },
+        {
+          "id": "inspect_pause",
+          "op": "wait.time",
+          "description": "Ожидание CAPTCHA, согласия или загрузки Google",
+          "config": {
+            "ms": 1000
+          },
+          "pos": [
+            300,
+            910
+          ]
+        },
+        {
+          "id": "inspect_verify",
+          "op": "web.js",
+          "description": "Проверить срок ожидания Google",
+          "config": {
+            "code": "(function(){\nreturn (function requireGoogleReady(google_gate) {\n  if (!google_gate.ready) {\n    throw new Error(`Google: ${google_gate.state === 'loading' ? 'page did not become ready' : 'CAPTCHA or consent is still pending'} after 180 seconds. Complete the check in the profile, then retry.`)\n  }\n  return true\n})(google_gate);})()",
+            "inject": [
+              "google_gate"
+            ]
+          },
+          "pos": [
+            300,
+            1040
+          ]
+        },
+        {
+          "id": "inspect_save",
+          "op": "proc.vars",
+          "description": "Сохранить готовый ответ Google",
+          "config": {
+            "vars": [
+              {
+                "name": "search_result",
+                "type": "object",
+                "value": "${google_gate}"
+              }
+            ]
+          },
+          "pos": [
+            300,
+            1170
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "inspect_mode",
+          "to": "inspect_loop",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "inspect_loop",
+          "to": "inspect_reset",
+          "port": "body",
+          "to_port": "in"
+        },
+        {
+          "from": "inspect_reset",
+          "to": "inspect_sample",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "inspect_sample",
+          "to": "inspect_ready",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "inspect_ready",
+          "to": "inspect_if",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "inspect_if",
+          "to": "inspect_break",
+          "port": "true",
+          "to_port": "in"
+        },
+        {
+          "from": "inspect_if",
+          "to": "inspect_pause",
+          "port": "false",
+          "to_port": "in"
+        },
+        {
+          "from": "inspect_pause",
+          "to": "inspect_loop",
+          "port": "next",
+          "to_port": "loop"
+        },
+        {
+          "from": "inspect_loop",
+          "to": "inspect_verify",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "inspect_verify",
+          "to": "inspect_save",
+          "port": "next",
+          "to_port": "in"
+        }
+      ]
+    },
+    {
+      "id": "matched_url",
+      "op": "proc.field",
+      "description": "Совпадающий адрес",
+      "config": {
+        "data": "${search_result}",
+        "key": "matched_url",
+        "save_to": "matched_url"
+      },
+      "pos": [
+        300,
+        1950
+      ]
+    },
+    {
+      "id": "has_results",
+      "op": "proc.field",
+      "description": "Есть ли результаты",
+      "config": {
+        "data": "${search_result}",
+        "key": "has_results",
+        "save_to": "has_results"
+      },
+      "pos": [
+        300,
+        2080
+      ]
+    },
+    {
+      "id": "any_results",
+      "op": "control.if",
+      "description": "Есть результаты?",
+      "config": {
+        "variable": "has_results",
+        "condition": "eq",
+        "value": true
+      },
+      "pos": [
+        300,
+        2210
+      ]
+    },
+    {
+      "id": "close_empty",
+      "op": "web.close_tab",
+      "description": "Нет результатов: закрыть созданную вкладку",
+      "config": {},
+      "pos": [
+        300,
+        2340
+      ]
+    },
+    {
+      "id": "match",
+      "op": "control.if",
+      "description": "Найдено совпадение?",
+      "config": {
+        "variable": "matched_url",
+        "condition": "ne",
+        "value": ""
+      },
+      "pos": [
+        300,
+        2470
+      ]
+    },
+    {
+      "id": "search_bottom",
+      "op": "control.group",
+      "description": "Прокрутить до конца",
+      "config": {
+        "name": "Вниз"
+      },
+      "pos": [
+        300,
+        2600
+      ],
+      "nodes": [
+        {
+          "id": "search_bottom_scroll",
+          "op": "web.scroll",
+          "description": "Прокрутка",
+          "config": {
+            "position": "bottom",
+            "kind": "smooth",
+            "step_px": 600,
+            "step_ms": 100
+          },
+          "pos": [
+            300,
+            0
+          ]
+        },
+        {
+          "id": "search_bottom_settle",
+          "op": "web.js",
+          "description": "Дождаться окончания прокрутки и догрузки",
+          "config": {
+            "code": "(async function settleScroll(position) {\n  const deadline = Date.now() + 12000\n  let previous = -1, stable = 0\n  while (Date.now() < deadline) {\n    const height = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)\n    const goal = position === 'bottom' ? Math.max(0, height - innerHeight) : 0\n    window.scrollTo({ top: goal, behavior: 'instant' })\n    if (height === previous && Math.abs(scrollY - goal) <= 2) stable++\n    else stable = 0\n    if (stable >= 3) return true\n    previous = height\n    await new Promise(resolve => setTimeout(resolve, 250))\n  }\n  throw new Error('Scrolling did not settle within 12 seconds')\n})(\"bottom\")",
+            "inject": []
+          },
+          "pos": [
+            300,
+            130
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "search_bottom_scroll",
+          "to": "search_bottom_settle",
+          "port": "next",
+          "to_port": "in"
+        }
+      ]
+    },
+    {
+      "id": "prepare_next",
+      "op": "web.js",
+      "description": "Найти следующую страницу и проверить лимит",
+      "config": {
+        "code": "(function(){function visibleLink(link) {\n  const style = getComputedStyle(link)\n  const rect = link.getBoundingClientRect()\n  for (let ancestor = link.parentElement; ancestor; ancestor = ancestor.parentElement) {\n    const parent = getComputedStyle(ancestor)\n    if (parent.display === 'none' || Number(parent.opacity || 1) === 0) return false\n  }\n  return !link.closest('[hidden], [inert], [aria-hidden=\"true\"], [aria-disabled=\"true\"]') &&\n    style.display !== 'none' && !['hidden', 'collapse'].includes(style.visibility) && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0\n}\nreturn (function prepareNext(page_index, page_limit = 20) {\n  document.querySelectorAll('[data-ombra-next]').forEach(link => link.removeAttribute('data-ombra-next'))\n  if (page_index + 1 >= page_limit) return false\n  const current = new URL(location.href)\n  const link = [...document.querySelectorAll('a#pnnext, a[rel=\"next\"]')].find(link => {\n    try {\n    const next = new URL(link.href, location.href)\n    return visibleLink(link) && next.origin === current.origin && next.pathname === '/search' &&\n      next.searchParams.get('q') === current.searchParams.get('q') &&\n      Number(next.searchParams.get('start')) > Number(current.searchParams.get('start') || 0)\n    } catch { return false }\n  })\n  if (!link) return false\n  link.setAttribute('data-ombra-next', '1')\n  link.target = '_self'\n  return true\n})(page_index, page_limit);})()",
+        "inject": [
+          "page_index",
+          "page_limit"
+        ],
+        "save_to": "more"
+      },
+      "pos": [
+        300,
+        2730
+      ]
+    },
+    {
+      "id": "more",
+      "op": "control.if",
+      "description": "Есть следующая страница?",
+      "config": {
+        "variable": "more",
+        "condition": "eq",
+        "value": true
+      },
+      "pos": [
+        300,
+        2860
+      ]
+    },
+    {
+      "id": "next_prepare",
+      "op": "web.js",
+      "description": "Подготовить ожидание следующей страницы",
+      "config": {
+        "code": "(function(){\nreturn (function prepareNavigation() {\n  const root = document.documentElement\n  const previous = location.href\n  root.setAttribute('data-ombra-navigation', 'pending')\n  const clear = () => { root.removeAttribute('data-ombra-navigation'); clearInterval(timer) }\n  const timer = setInterval(() => { if (location.href !== previous) clear() }, 100)\n  // A cached document may return with this marker after Go Back.\n  window.addEventListener('pageshow', clear, { once: true })\n  setTimeout(() => clearInterval(timer), 30000)\n})();})()",
+        "inject": []
+      },
+      "pos": [
+        300,
+        2990
+      ]
+    },
+    {
+      "id": "next_click",
+      "op": "web.click",
+      "description": "Нажать «Следующая»",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "a[data-ombra-next=\"1\"]"
+        }
+      },
+      "pos": [
+        300,
+        3120
+      ]
+    },
+    {
+      "id": "next_wait",
+      "op": "wait.element",
+      "description": "Дождаться новой страницы",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "html:not([data-ombra-navigation]) body"
+        },
+        "timeout_ms": 30000,
+        "save_to": "navigation_ready"
+      },
+      "pos": [
+        300,
+        3250
+      ]
+    },
+    {
+      "id": "next_ready",
+      "op": "web.js",
+      "description": "Дождаться полной загрузки",
+      "config": {
+        "code": "(function(){async function waitReady() {\n  const deadline = Date.now() + 15000\n  let completeSince = 0\n  while (Date.now() < deadline) {\n    if (document.readyState === 'complete') {\n      completeSince ||= Date.now()\n      if (Date.now() - completeSince >= 500) return true\n    } else completeSince = 0\n    await new Promise(resolve => setTimeout(resolve, 100))\n  }\n  throw new Error('Page did not finish loading within 15 seconds')\n}\nreturn (async function navigationFinished(navigation_ready) {\n  if (!navigation_ready) throw new Error('The click did not navigate within 30 seconds')\n  return waitReady()\n})(navigation_ready);})()",
+        "inject": [
+          "navigation_ready"
+        ]
+      },
+      "pos": [
+        300,
+        3380
+      ],
+      "on_error": "skip"
+    },
+    {
+      "id": "stop_search",
+      "op": "control.break",
+      "description": "Закончить поиск",
+      "config": {},
+      "pos": [
+        300,
+        3510
+      ]
+    },
+    {
+      "id": "found",
+      "op": "control.if",
+      "description": "Открыть найденный адрес?",
+      "config": {
+        "variable": "matched_url",
+        "condition": "ne",
+        "value": ""
+      },
+      "pos": [
+        300,
+        3640
+      ]
+    },
+    {
+      "id": "visit",
+      "op": "web.goto",
+      "description": "Открыть совпадающую ссылку",
+      "config": {
+        "url": "${matched_url}",
+        "timeout_ms": 45000
+      },
+      "pos": [
+        300,
+        3770
+      ]
+    },
+    {
+      "id": "visit_ready",
+      "op": "web.js",
+      "description": "Дождаться загрузки сайта",
+      "config": {
+        "code": "(function(){\nreturn (async function waitReady() {\n  const deadline = Date.now() + 15000\n  let completeSince = 0\n  while (Date.now() < deadline) {\n    if (document.readyState === 'complete') {\n      completeSince ||= Date.now()\n      if (Date.now() - completeSince >= 500) return true\n    } else completeSince = 0\n    await new Promise(resolve => setTimeout(resolve, 100))\n  }\n  throw new Error('Page did not finish loading within 15 seconds')\n})();})()",
+        "inject": []
+      },
+      "pos": [
+        300,
+        3900
+      ]
+    },
+    {
+      "id": "visit_bottom",
+      "op": "control.group",
+      "description": "Прокрутить до конца",
+      "config": {
+        "name": "Вниз"
+      },
+      "pos": [
+        300,
+        4030
+      ],
+      "nodes": [
+        {
+          "id": "visit_bottom_scroll",
+          "op": "web.scroll",
+          "description": "Прокрутка",
+          "config": {
+            "position": "bottom",
+            "kind": "smooth",
+            "step_px": 600,
+            "step_ms": 100
+          },
+          "pos": [
+            300,
+            0
+          ]
+        },
+        {
+          "id": "visit_bottom_settle",
+          "op": "web.js",
+          "description": "Дождаться окончания прокрутки и догрузки",
+          "config": {
+            "code": "(async function settleScroll(position) {\n  const deadline = Date.now() + 12000\n  let previous = -1, stable = 0\n  while (Date.now() < deadline) {\n    const height = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)\n    const goal = position === 'bottom' ? Math.max(0, height - innerHeight) : 0\n    window.scrollTo({ top: goal, behavior: 'instant' })\n    if (height === previous && Math.abs(scrollY - goal) <= 2) stable++\n    else stable = 0\n    if (stable >= 3) return true\n    previous = height\n    await new Promise(resolve => setTimeout(resolve, 250))\n  }\n  throw new Error('Scrolling did not settle within 12 seconds')\n})(\"bottom\")",
+            "inject": []
+          },
+          "pos": [
+            300,
+            130
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "visit_bottom_scroll",
+          "to": "visit_bottom_settle",
+          "port": "next",
+          "to_port": "in"
+        }
+      ]
+    },
+    {
+      "id": "visit_top",
+      "op": "control.group",
+      "description": "Вернуться к началу",
+      "config": {
+        "name": "Вверх"
+      },
+      "pos": [
+        300,
+        4160
+      ],
+      "nodes": [
+        {
+          "id": "visit_top_scroll",
+          "op": "web.scroll",
+          "description": "Прокрутка",
+          "config": {
+            "position": "top",
+            "kind": "smooth",
+            "step_px": 600,
+            "step_ms": 100
+          },
+          "pos": [
+            300,
+            0
+          ]
+        },
+        {
+          "id": "visit_top_settle",
+          "op": "web.js",
+          "description": "Дождаться окончания прокрутки и догрузки",
+          "config": {
+            "code": "(async function settleScroll(position) {\n  const deadline = Date.now() + 12000\n  let previous = -1, stable = 0\n  while (Date.now() < deadline) {\n    const height = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)\n    const goal = position === 'bottom' ? Math.max(0, height - innerHeight) : 0\n    window.scrollTo({ top: goal, behavior: 'instant' })\n    if (height === previous && Math.abs(scrollY - goal) <= 2) stable++\n    else stable = 0\n    if (stable >= 3) return true\n    previous = height\n    await new Promise(resolve => setTimeout(resolve, 250))\n  }\n  throw new Error('Scrolling did not settle within 12 seconds')\n})(\"top\")",
+            "inject": []
+          },
+          "pos": [
+            300,
+            130
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "visit_top_scroll",
+          "to": "visit_top_settle",
+          "port": "next",
+          "to_port": "in"
+        }
+      ]
+    },
+    {
+      "id": "pick_link",
+      "op": "web.js",
+      "description": "Выбрать случайную HTTPS-ссылку этого сайта",
+      "config": {
+        "code": "(function(){function visibleLink(link) {\n  const style = getComputedStyle(link)\n  const rect = link.getBoundingClientRect()\n  for (let ancestor = link.parentElement; ancestor; ancestor = ancestor.parentElement) {\n    const parent = getComputedStyle(ancestor)\n    if (parent.display === 'none' || Number(parent.opacity || 1) === 0) return false\n  }\n  return !link.closest('[hidden], [inert], [aria-hidden=\"true\"], [aria-disabled=\"true\"]') &&\n    style.display !== 'none' && !['hidden', 'collapse'].includes(style.visibility) && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0\n}\nreturn (function chooseSafeLink() {\n  document.querySelectorAll('[data-ombra-follow]').forEach(link => link.removeAttribute('data-ombra-follow'))\n  const current = new URL(location.href)\n  const host = current.hostname.replace(/^www\\./, '').toLowerCase()\n  const seen = new Set()\n  const links = [...document.querySelectorAll('a[href]')].filter(link => {\n    try {\n    if (!visibleLink(link) || link.hasAttribute('download')) return false\n    const destination = new URL(link.href, current.href)\n    const action = decodeURIComponent(destination.pathname + destination.search).toLowerCase()\n    if (destination.protocol !== 'https:' || destination.username || destination.password ||\n      destination.hostname.replace(/^www\\./, '').toLowerCase() !== host || destination.port !== current.port ||\n      /(?:^|[./?&=_-])(?:log[-_]?out|logoff|sign[-_]?out|delete|remove|unsubscribe|checkout|cart|purchase|buy|download)(?:$|[./?&=_-])/.test(action) ||\n      /\\.(?:pdf|zip|7z|rar|tar|gz|bz2|xz|exe|dmg|pkg|msi|apk|iso|docx?|xlsx?|pptx?|csv|epub)$/i.test(decodeURIComponent(destination.pathname))) return false\n    destination.hash = ''\n    const here = new URL(current.href)\n    here.hash = ''\n    if (destination.href === here.href || seen.has(destination.href)) return false\n    seen.add(destination.href)\n    return true\n    } catch { return false }\n  })\n  const link = links[Math.floor(Math.random() * links.length)]\n  if (!link) return false\n  link.setAttribute('data-ombra-follow', '1')\n  link.target = '_self'\n  return true\n})();})()",
+        "inject": [],
+        "save_to": "has_safe_link"
+      },
+      "pos": [
+        300,
+        4290
+      ]
+    },
+    {
+      "id": "safe_link",
+      "op": "control.if",
+      "description": "Есть подходящая ссылка?",
+      "config": {
+        "variable": "has_safe_link",
+        "condition": "eq",
+        "value": true
+      },
+      "pos": [
+        300,
+        4420
+      ]
+    },
+    {
+      "id": "follow_prepare",
+      "op": "web.js",
+      "description": "Подготовить ожидание перехода",
+      "config": {
+        "code": "(function(){\nreturn (function prepareNavigation() {\n  const root = document.documentElement\n  const previous = location.href\n  root.setAttribute('data-ombra-navigation', 'pending')\n  const clear = () => { root.removeAttribute('data-ombra-navigation'); clearInterval(timer) }\n  const timer = setInterval(() => { if (location.href !== previous) clear() }, 100)\n  // A cached document may return with this marker after Go Back.\n  window.addEventListener('pageshow', clear, { once: true })\n  setTimeout(() => clearInterval(timer), 30000)\n})();})()",
+        "inject": []
+      },
+      "pos": [
+        300,
+        4550
+      ]
+    },
+    {
+      "id": "follow_click",
+      "op": "web.click",
+      "description": "Нажать выбранную ссылку",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "a[data-ombra-follow=\"1\"]"
+        }
+      },
+      "pos": [
+        300,
+        4680
+      ]
+    },
+    {
+      "id": "follow_wait",
+      "op": "wait.element",
+      "description": "Дождаться новой страницы",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "html:not([data-ombra-navigation]) body"
+        },
+        "timeout_ms": 30000,
+        "save_to": "navigation_ready"
+      },
+      "pos": [
+        300,
+        4810
+      ]
+    },
+    {
+      "id": "follow_ready",
+      "op": "web.js",
+      "description": "Дождаться полной загрузки",
+      "config": {
+        "code": "(function(){async function waitReady() {\n  const deadline = Date.now() + 15000\n  let completeSince = 0\n  while (Date.now() < deadline) {\n    if (document.readyState === 'complete') {\n      completeSince ||= Date.now()\n      if (Date.now() - completeSince >= 500) return true\n    } else completeSince = 0\n    await new Promise(resolve => setTimeout(resolve, 100))\n  }\n  throw new Error('Page did not finish loading within 15 seconds')\n}\nreturn (async function navigationFinished(navigation_ready) {\n  if (!navigation_ready) throw new Error('The click did not navigate within 30 seconds')\n  return waitReady()\n})(navigation_ready);})()",
+        "inject": [
+          "navigation_ready"
+        ]
+      },
+      "pos": [
+        300,
+        4940
+      ]
+    },
+    {
+      "id": "follow_bottom",
+      "op": "control.group",
+      "description": "Прокрутить до конца",
+      "config": {
+        "name": "Вниз"
+      },
+      "pos": [
+        300,
+        5070
+      ],
+      "nodes": [
+        {
+          "id": "follow_bottom_scroll",
+          "op": "web.scroll",
+          "description": "Прокрутка",
+          "config": {
+            "position": "bottom",
+            "kind": "smooth",
+            "step_px": 600,
+            "step_ms": 100
+          },
+          "pos": [
+            300,
+            0
+          ]
+        },
+        {
+          "id": "follow_bottom_settle",
+          "op": "web.js",
+          "description": "Дождаться окончания прокрутки и догрузки",
+          "config": {
+            "code": "(async function settleScroll(position) {\n  const deadline = Date.now() + 12000\n  let previous = -1, stable = 0\n  while (Date.now() < deadline) {\n    const height = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)\n    const goal = position === 'bottom' ? Math.max(0, height - innerHeight) : 0\n    window.scrollTo({ top: goal, behavior: 'instant' })\n    if (height === previous && Math.abs(scrollY - goal) <= 2) stable++\n    else stable = 0\n    if (stable >= 3) return true\n    previous = height\n    await new Promise(resolve => setTimeout(resolve, 250))\n  }\n  throw new Error('Scrolling did not settle within 12 seconds')\n})(\"bottom\")",
+            "inject": []
+          },
+          "pos": [
+            300,
+            130
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "follow_bottom_scroll",
+          "to": "follow_bottom_settle",
+          "port": "next",
+          "to_port": "in"
+        }
+      ]
+    },
+    {
+      "id": "follow_top",
+      "op": "control.group",
+      "description": "Вернуться к началу",
+      "config": {
+        "name": "Вверх"
+      },
+      "pos": [
+        300,
+        5200
+      ],
+      "nodes": [
+        {
+          "id": "follow_top_scroll",
+          "op": "web.scroll",
+          "description": "Прокрутка",
+          "config": {
+            "position": "top",
+            "kind": "smooth",
+            "step_px": 600,
+            "step_ms": 100
+          },
+          "pos": [
+            300,
+            0
+          ]
+        },
+        {
+          "id": "follow_top_settle",
+          "op": "web.js",
+          "description": "Дождаться окончания прокрутки и догрузки",
+          "config": {
+            "code": "(async function settleScroll(position) {\n  const deadline = Date.now() + 12000\n  let previous = -1, stable = 0\n  while (Date.now() < deadline) {\n    const height = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)\n    const goal = position === 'bottom' ? Math.max(0, height - innerHeight) : 0\n    window.scrollTo({ top: goal, behavior: 'instant' })\n    if (height === previous && Math.abs(scrollY - goal) <= 2) stable++\n    else stable = 0\n    if (stable >= 3) return true\n    previous = height\n    await new Promise(resolve => setTimeout(resolve, 250))\n  }\n  throw new Error('Scrolling did not settle within 12 seconds')\n})(\"top\")",
+            "inject": []
+          },
+          "pos": [
+            300,
+            130
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "follow_top_scroll",
+          "to": "follow_top_settle",
+          "port": "next",
+          "to_port": "in"
+        }
+      ]
+    },
+    {
+      "id": "back",
+      "op": "web.back",
+      "description": "Вернуться на целевую страницу",
+      "config": {},
+      "pos": [
+        300,
+        5330
+      ]
+    },
+    {
+      "id": "back_ready",
+      "op": "web.js",
+      "description": "Дождаться завершения возврата",
+      "config": {
+        "code": "(function(){\nreturn (async function waitReady() {\n  const deadline = Date.now() + 15000\n  let completeSince = 0\n  while (Date.now() < deadline) {\n    if (document.readyState === 'complete') {\n      completeSince ||= Date.now()\n      if (Date.now() - completeSince >= 500) return true\n    } else completeSince = 0\n    await new Promise(resolve => setTimeout(resolve, 100))\n  }\n  throw new Error('Page did not finish loading within 15 seconds')\n})();})()",
+        "inject": []
+      },
+      "pos": [
+        300,
+        5460
+      ]
+    },
+    {
+      "id": "export",
+      "op": "proc.vars",
+      "description": "Завершить и показать найденный адрес",
+      "config": {
+        "mode": "export",
+        "names": [
+          "matched_url"
+        ]
+      },
+      "pos": [
+        300,
+        5590
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "init",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "init",
+      "to": "target",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "target",
+      "to": "keyword",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "keyword",
+      "to": "new_tab",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "new_tab",
+      "to": "google",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "google",
+      "to": "home_ready",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "home_ready",
+      "to": "search_box",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "search_box",
+      "to": "input",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "input",
+      "to": "submit_prepare",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "submit_prepare",
+      "to": "enter",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "enter",
+      "to": "submit_wait",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "submit_wait",
+      "to": "submit_ready",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "submit_ready",
+      "to": "pages",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "pages",
+      "to": "inspect",
+      "port": "body",
+      "to_port": "in"
+    },
+    {
+      "from": "inspect",
+      "to": "matched_url",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "matched_url",
+      "to": "has_results",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "has_results",
+      "to": "any_results",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "any_results",
+      "to": "close_empty",
+      "port": "false",
+      "to_port": "in"
+    },
+    {
+      "from": "close_empty",
+      "to": "stop_search",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "any_results",
+      "to": "match",
+      "port": "true",
+      "to_port": "in"
+    },
+    {
+      "from": "match",
+      "to": "stop_search",
+      "port": "true",
+      "to_port": "in"
+    },
+    {
+      "from": "match",
+      "to": "search_bottom",
+      "port": "false",
+      "to_port": "in"
+    },
+    {
+      "from": "search_bottom",
+      "to": "prepare_next",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "prepare_next",
+      "to": "more",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "more",
+      "to": "stop_search",
+      "port": "false",
+      "to_port": "in"
+    },
+    {
+      "from": "more",
+      "to": "next_prepare",
+      "port": "true",
+      "to_port": "in"
+    },
+    {
+      "from": "next_prepare",
+      "to": "next_click",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "next_click",
+      "to": "next_wait",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "next_wait",
+      "to": "next_ready",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "next_ready",
+      "to": "pages",
+      "port": "next",
+      "to_port": "loop"
+    },
+    {
+      "from": "pages",
+      "to": "found",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "found",
+      "to": "export",
+      "port": "false",
+      "to_port": "in"
+    },
+    {
+      "from": "found",
+      "to": "visit",
+      "port": "true",
+      "to_port": "in"
+    },
+    {
+      "from": "visit",
+      "to": "visit_ready",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "visit_ready",
+      "to": "visit_bottom",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "visit_bottom",
+      "to": "visit_top",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "visit_top",
+      "to": "pick_link",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "pick_link",
+      "to": "safe_link",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "safe_link",
+      "to": "export",
+      "port": "false",
+      "to_port": "in"
+    },
+    {
+      "from": "safe_link",
+      "to": "follow_prepare",
+      "port": "true",
+      "to_port": "in"
+    },
+    {
+      "from": "follow_prepare",
+      "to": "follow_click",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "follow_click",
+      "to": "follow_wait",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "follow_wait",
+      "to": "follow_ready",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "follow_ready",
+      "to": "follow_bottom",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "follow_bottom",
+      "to": "follow_top",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "follow_top",
+      "to": "back",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "back",
+      "to": "back_ready",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "back_ready",
+      "to": "export",
+      "port": "next",
+      "to_port": "in"
+    }
+  ]
+}

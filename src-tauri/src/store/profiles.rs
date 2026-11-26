@@ -1,6 +1,7 @@
 use super::secrets::{Secret, SecretField};
 use super::tags::{prune_tags, set_profile_tags_tx};
 use super::{Store, StoreError};
+use crate::humanize::{self, Humanize};
 use rusqlite::types::{Type, Value};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use serde::Serialize;
@@ -26,6 +27,10 @@ pub struct ProfileInput {
     pub bookmarks: Option<Vec<super::bookmarks::Bookmark>>,
     /// Набор расширений; 0 — «Общий».
     pub ext_category_id: i64,
+    /// Очеловечивание ввода: `None` — при правке не меняется, при создании — значения по умолчанию.
+    pub humanize: Option<Humanize>,
+    /// Seed персоны: `None` — при правке не меняется, при создании — новый (импорт архива переносит свой).
+    pub humanize_seed: Option<u64>,
     pub network: Option<crate::network::ProfileNetwork>,
     pub inline_proxy: Option<super::proxies::ProxyInput>,
 }
@@ -47,6 +52,8 @@ impl ProfileInput {
             proxy_id: None,
             bookmarks: None,
             ext_category_id: super::extensions::DEFAULT_CATEGORY,
+            humanize: None,
+            humanize_seed: None,
             network: None,
             inline_proxy: None,
         }
@@ -77,7 +84,15 @@ pub struct ProfileRecord {
     /// В корзине с этого времени; `None` — живой профиль.
     pub deleted_at: Option<i64>,
     pub ext_category_id: i64,
+    pub humanize: Humanize,
+    /// Seed персоны движка (решение D4); в JSON — строкой: в числе JavaScript 64 бита теряются.
+    #[serde(serialize_with = "seed_text")]
+    pub humanize_seed: u64,
     pub network: crate::network::ProfileNetwork,
+}
+
+fn seed_text<S: serde::Serializer>(seed: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(seed)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
@@ -124,7 +139,7 @@ pub type SecretRead = Result<Option<Secret>, StoreError>;
 
 const COLUMNS: &str = "id, serial, name, note, group_id, platform_domain, start_urls, extra_args, username, \
                        password_enc IS NOT NULL, totp_enc IS NOT NULL, fingerprint, proxy_id, created_at, last_opened_at, \
-                       restore_tabs, gateway_replaced_at, deleted_at, ext_category_id, network";
+                       restore_tabs, gateway_replaced_at, deleted_at, ext_category_id, humanize, humanize_seed, network";
 
 impl Store {
     pub fn create_profile(&self, input: &ProfileInput, now: i64) -> Result<ProfileRecord, StoreError> {
@@ -139,7 +154,7 @@ impl Store {
 
     /// Как `create_profiles`, но теги у каждого профиля свои (`row_tags[i]` — для `inputs[i]`), в той же транзакции.
     pub fn create_profiles_tagged(&self, inputs: &[ProfileInput], row_tags: &[Vec<String>], now: i64) -> Result<Vec<ProfileRecord>, StoreError> {
-        if inputs.len() != row_tags.len() { return Err(StoreError::Invalid("row_tags")); }
+        debug_assert_eq!(inputs.len(), row_tags.len());
         self.create_with_tags(inputs, now, |tx, ids| {
             for (id, tags) in ids.iter().zip(row_tags).filter(|(_, t)| !t.is_empty()) {
                 super::tags::add_tags_tx(tx, std::slice::from_ref(id), tags)?;
@@ -184,19 +199,6 @@ impl Store {
         ids.iter()
             .map(|id| fetch(&conn, id)?.ok_or_else(|| StoreError::NotFound(format!("профиль {id}"))))
             .collect()
-    }
-
-    /// Change the name and note of an active profile without rewriting other fields.
-    pub fn edit_profile_details(&self, id: &str, name: &str, note: &str) -> Result<(), StoreError> {
-        let name = validate_name(name)?;
-        let updated = self.conn().execute(
-            "UPDATE profiles SET name = ?2, note = ?3 WHERE id = ?1 AND deleted_at IS NULL",
-            params![id, name, note],
-        )?;
-        if updated == 0 {
-            return Err(StoreError::NotFound(format!("профиль {id}")));
-        }
-        Ok(())
     }
 
     /// Меняет заданные поля у профилей одной транзакцией; несуществующие id пропускаются. Возвращает число изменённых.
@@ -258,6 +260,15 @@ impl Store {
             }
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    /// «Сбросить персону»: новый seed — почерк профиля меняется (ТЗ 7.5).
+    pub fn set_humanize_seed(&self, id: &str, seed: u64) -> Result<(), StoreError> {
+        let changed = self.conn().execute("UPDATE profiles SET humanize_seed = ?2 WHERE id = ?1", params![id, seed as i64])?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("профиль {id}")));
+        }
         Ok(())
     }
 
@@ -338,7 +349,8 @@ impl Store {
             "UPDATE profiles SET name = ?2, note = ?3, group_id = ?4, platform_domain = ?5, start_urls = ?6, \
              restore_tabs = ?7, extra_args = ?8, username = ?9, password_enc = ?10, totp_enc = ?11, \
              fingerprint = ?12, proxy_id = ?13, ext_category_id = ?14, \
-             network = COALESCE(?15, CASE WHEN ?13 IS NOT NULL THEN json_set(network, '$.direct', json('false')) ELSE network END), \
+             humanize = COALESCE(?15, humanize), humanize_seed = COALESCE(?16, humanize_seed), \
+             network = COALESCE(?17, CASE WHEN ?13 IS NOT NULL THEN json_set(network, '$.direct', json('false')) ELSE network END), \
              gateway_replaced_at = CASE WHEN ?13 IS NOT NULL AND proxy_id IS ?13 THEN gateway_replaced_at END \
              WHERE id = ?1",
             params![
@@ -356,6 +368,8 @@ impl Store {
                 input.fingerprint_json,
                 input.proxy_id,
                 input.ext_category_id,
+                input.humanize.as_ref().map(Humanize::to_json),
+                input.humanize_seed.map(|seed| seed as i64),
                 input.network.as_ref().map(|value| serde_json::to_string(value).expect("network"))
             ],
         )?;
@@ -504,19 +518,14 @@ impl Store {
 
 fn validate(input: &ProfileInput) -> Result<(), StoreError> {
     if input.network.as_ref().is_some_and(|network| network.direct) && (input.proxy_id.is_some() || input.inline_proxy.is_some()) { return Err(StoreError::Invalid("proxy_id")); }
-    validate_name(&input.name)?;
+    let name = input.name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(StoreError::Invalid("name"));
+    }
     if serde_json::from_str::<serde_json::Value>(&input.fingerprint_json).is_err() {
         return Err(StoreError::Invalid("fingerprint"));
     }
     Ok(())
-}
-
-fn validate_name(name: &str) -> Result<&str, StoreError> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 100 {
-        return Err(StoreError::Invalid("name"));
-    }
-    Ok(name)
 }
 
 fn check_proxy(conn: &Connection, proxy_id: Option<i64>) -> Result<(), StoreError> {
@@ -548,10 +557,15 @@ fn insert_row(
 ) -> Result<String, StoreError> {
     let serial = next_serial(conn)?;
     let id = unused_id(conn)?;
+    let humanize_seed = match input.humanize_seed {
+        Some(seed) => seed,
+        None => humanize::new_seed()?,
+    };
     conn.execute(
         "INSERT INTO profiles (id, serial, name, note, group_id, platform_domain, start_urls, extra_args, username, \
-         password_enc, totp_enc, fingerprint, proxy_id, restore_tabs, created_at, ext_category_id, humanize_seed, network) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, random(), ?17)",
+         password_enc, totp_enc, fingerprint, proxy_id, restore_tabs, created_at, ext_category_id, humanize, humanize_seed, \
+         network) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             id,
             serial,
@@ -569,6 +583,8 @@ fn insert_row(
             input.restore_tabs,
             now,
             input.ext_category_id,
+            input.humanize.clone().unwrap_or_default().to_json(),
+            humanize_seed as i64,
             serde_json::to_string(&input.network.clone().unwrap_or_default()).expect("network")
         ],
     )?;
@@ -608,9 +624,24 @@ fn fetch(conn: &Connection, id: &str) -> Result<Option<ProfileRecord>, StoreErro
         .optional()?)
 }
 
+/// Текстовый столбец, прочитанный мягко: не TEXT (BLOB, NULL, число) или TEXT не UTF-8 — `None`, а не ошибка, которая
+/// уронила бы весь список профилей.
+fn lenient_text(row: &Row<'_>, idx: usize) -> Option<String> {
+    match row.get_ref(idx) {
+        Ok(rusqlite::types::ValueRef::Text(bytes)) => std::str::from_utf8(bytes).ok().map(str::to_owned),
+        _ => None,
+    }
+}
+
 fn row_to_record(row: &Row<'_>) -> rusqlite::Result<ProfileRecord> {
+    let id: String = row.get(0)?;
+    // Столбец — JSON без схемы, его пишут и другие сборки: нечитаемый не роняет ни список, ни профиль.
+    let humanize = lenient_text(row, 19).ok_or_else(|| "не текст UTF-8".to_string()).and_then(|t| Humanize::from_json(&t).map_err(|e| e.to_string())).unwrap_or_else(|e| {
+        log::warn!("настройки очеловечивания профиля {id} нечитаемы, взяты значения по умолчанию: {e}");
+        Humanize::default()
+    });
     Ok(ProfileRecord {
-        id: row.get(0)?,
+        id,
         serial: row.get(1)?,
         name: row.get(2)?,
         note: row.get(3)?,
@@ -629,7 +660,9 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<ProfileRecord> {
         gateway_replaced_at: row.get(16)?,
         deleted_at: row.get(17)?,
         ext_category_id: row.get(18)?,
-        network: serde_json::from_str(&row.get::<_, String>(19)?).map_err(|e| rusqlite::Error::FromSqlConversionFailure(19, Type::Text, Box::new(e)))?,
+        humanize,
+        humanize_seed: row.get::<_, i64>(20)? as u64,
+        network: serde_json::from_str(&row.get::<_, String>(21)?).map_err(|e| rusqlite::Error::FromSqlConversionFailure(21, Type::Text, Box::new(e)))?,
     })
 }
 
@@ -999,6 +1032,78 @@ mod tests {
         );
         assert_eq!(names(&ListQuery { group: Some(GroupFilter::Ungrouped), tag: Some("vip".into()), ..Default::default() }), Vec::<String>::new());
         assert_eq!(a.group_id, Some(shops.id));
+    }
+
+    #[test]
+    fn humanize_settings_and_seed_round_trip() {
+        let store = memory_store();
+        let a = store.create_profile(&named("a"), 1).unwrap();
+        let b = store.create_profile(&named("b"), 1).unwrap();
+        assert_eq!(a.humanize, Humanize::default(), "включено по умолчанию");
+        assert_ne!(a.humanize_seed, b.humanize_seed, "у каждого профиля свой seed");
+        // Правка без настроек и seed их не трогает; настройки заменяются целиком, seed остаётся.
+        let mut input = named("a2");
+        let kept = store.update_profile(&a.id, &input).unwrap();
+        assert_eq!((kept.humanize.clone(), kept.humanize_seed), (Humanize::default(), a.humanize_seed));
+        input.humanize = Some(Humanize { enabled: false, preset: crate::humanize::Preset::Fast, block_input: false,
+                                         paste_key: "Ctrl+Alt+V".into() });
+        let changed = store.update_profile(&a.id, &input).unwrap();
+        assert_eq!((changed.humanize, changed.humanize_seed), (input.humanize.clone().unwrap(), a.humanize_seed));
+        // Импорт архива переносит свой seed; «Сбросить персону» даёт новый.
+        let mut imported = named("c");
+        imported.humanize_seed = Some(u64::MAX);
+        assert_eq!(store.create_profile(&imported, 1).unwrap().humanize_seed, u64::MAX, "u64 целиком, не i64");
+        store.set_humanize_seed(&a.id, 7).unwrap();
+        assert_eq!(store.get_profile(&a.id).unwrap().unwrap().humanize_seed, 7);
+        assert!(matches!(store.set_humanize_seed("nope00", 7), Err(StoreError::NotFound(_))));
+        let json = serde_json::to_value(store.get_profile(&b.id).unwrap().unwrap()).unwrap();
+        assert_eq!(json["humanize_seed"], serde_json::json!(b.humanize_seed.to_string()), "seed в JSON — строкой");
+    }
+
+    /// Столбец `profiles.humanize` — JSON без схемы: ключ или пресет от другой сборки (старая сборка на новых данных) или
+    /// правка базы руками не роняют ни список, ни профиль. Незнакомый ключ пропускается, нечитаемое — значения по умолчанию.
+    #[test]
+    fn unreadable_humanize_column_does_not_fail_the_profile_list() {
+        let store = memory_store();
+        let a = store.create_profile(&named("a"), 1).unwrap();
+        let b = store.create_profile(&named("b"), 1).unwrap();
+        let set = |id: &str, json: &str| {
+            store.raw().execute("UPDATE profiles SET humanize = ?2 WHERE id = ?1", params![id, json]).unwrap();
+        };
+        set(&a.id, r#"{"enabled":false,"speed":2}"#);
+        set(&b.id, r#"{"preset":"turbo"}"#);
+        let kept = Humanize { enabled: false, ..Humanize::default() };
+        let listed = store.list_profiles(&ListQuery::default()).unwrap();
+        let listed = |id: &str| listed.iter().find(|p| p.id == id).map(|p| p.humanize.clone());
+        assert_eq!(listed(&a.id), Some(kept.clone()), "известный ключ сохранён, незнакомый пропущен");
+        assert_eq!(listed(&b.id), Some(Humanize::default()), "незнакомый пресет — значения по умолчанию");
+        assert_eq!(store.get_profile(&a.id).unwrap().unwrap().humanize, kept);
+        assert_eq!(store.get_profile(&b.id).unwrap().unwrap().humanize, Humanize::default());
+    }
+
+    /// BLOB и текст не UTF-8 в столбце `humanize` не роняют ни профиль, ни список: значения по умолчанию.
+    #[test]
+    fn non_utf8_columns_read_as_defaults() {
+        let store = memory_store();
+        let a = store.create_profile(&named("a"), 1).unwrap();
+        for value in ["x'ff'", "CAST(x'7b22ff7d' AS TEXT)"] {
+            let sql = format!("UPDATE profiles SET humanize = {value} WHERE id = ?1");
+            store.raw().execute(&sql, params![a.id]).unwrap();
+            let got = store.get_profile(&a.id).unwrap().unwrap();
+            assert_eq!(got.humanize, Humanize::default(), "{value}");
+            let listed = store.list_profiles(&ListQuery::default()).unwrap();
+            assert_eq!(listed.iter().find(|p| p.id == a.id).map(|p| p.humanize.clone()), Some(Humanize::default()), "{value}");
+        }
+    }
+
+    /// Массив вместо объекта в столбце `humanize` — нечитаемое: значения по умолчанию.
+    #[test]
+    fn a_json_array_in_the_columns_reads_as_defaults() {
+        let store = memory_store();
+        let a = store.create_profile(&named("a"), 1).unwrap();
+        store.raw().execute("UPDATE profiles SET humanize = '[\"careful\"]' WHERE id = ?1", params![a.id]).unwrap();
+        let got = store.get_profile(&a.id).unwrap().unwrap();
+        assert_eq!(got.humanize, Humanize::default());
     }
 
     #[test]

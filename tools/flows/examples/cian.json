@@ -1,0 +1,771 @@
+{
+  "format": "ombra-flow/1",
+  "name": "Циан — обход выдачи и карточек",
+  "group": "Реальные сценарии",
+  "remark": "По образцу https://a-parser.com/resources/452/. Укажите search_url с фильтрами. По умолчанию одна страница и три объявления. Результат — XLSX и переменные summary/offers. Для проверки входа сначала войдите в Циан вручную в выбранном профиле, затем включите require_login. Обычный запуск с require_login=false допускает гостевую сессию. Контакты заполняются только если сайт уже отдал их странице. Проверка доступа или недоступная карточка останавливает процесс; записанные строки Excel сохраняются.",
+  "variables": [
+    {
+      "name": "search_url",
+      "type": "string",
+      "default": "https://www.cian.ru/cat.php?deal_type=sale&engine_version=2&offer_type=flat&region=-1",
+      "description": "Ссылка на выдачу Циан со своими фильтрами"
+    },
+    {
+      "name": "page_limit",
+      "type": "number",
+      "default": 1,
+      "description": "Максимум страниц выдачи"
+    },
+    {
+      "name": "offer_limit",
+      "type": "number",
+      "default": 3,
+      "description": "Максимум объявлений за весь запуск"
+    },
+    {
+      "name": "pause_ms",
+      "type": "number",
+      "default": 2000,
+      "description": "Пауза после открытия страницы, миллисекунды"
+    },
+    {
+      "name": "output_name",
+      "type": "string",
+      "default": "cian",
+      "description": "Имя таблицы без пути и расширения"
+    },
+    {
+      "name": "require_login",
+      "type": "boolean",
+      "default": false,
+      "description": "Остановить процесс, если вход в аккаунт Циан не подтверждён"
+    }
+  ],
+  "settings": {
+    "after_tabs": "keep",
+    "after_browser": "quit",
+    "timeout_s": 1800
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "op": "start",
+      "description": "Параметры обхода",
+      "config": {},
+      "pos": [
+        300,
+        0
+      ]
+    },
+    {
+      "id": "init",
+      "op": "web.js",
+      "description": "Проверить параметры",
+      "config": {
+        "code": "(function initialize(search_url, page_limit, offer_limit, pause_ms, output_name) {\n  const url = new URL(search_url)\n  if (url.protocol !== 'https:' || !/(^|\\.)cian\\.ru$/i.test(url.hostname) || url.pathname !== '/cat.php' || url.username || url.password) {\n    throw new Error('search_url: нужна HTTPS-ссылка на выдачу Циан /cat.php с фильтрами')\n  }\n  for (const [name, value, max] of [['page_limit', page_limit, 100], ['offer_limit', offer_limit, 10000], ['pause_ms', pause_ms, 60000]]) {\n    if (!Number.isInteger(value) || value < (name === 'pause_ms' ? 0 : 1) || value > max) throw new Error(`${name}: неверное значение`)\n  }\n  if (!/^[\\p{L}\\p{N}_ -]{1,80}$/u.test(output_name)) throw new Error('output_name: имя файла без пути и расширения')\n  return { next_url: url.href, page_count: 0, seen: [], rows: [] }\n})(search_url, page_limit, offer_limit, pause_ms, output_name);",
+        "inject": [
+          "search_url",
+          "page_limit",
+          "offer_limit",
+          "pause_ms",
+          "output_name"
+        ],
+        "save_to": "crawl"
+      },
+      "pos": [
+        300,
+        130
+      ]
+    },
+    {
+      "id": "pages_loop",
+      "op": "control.for_times",
+      "description": "Обойти страницы выдачи",
+      "config": {
+        "times": "${page_limit}",
+        "index_to": "page_index"
+      },
+      "pos": [
+        300,
+        260
+      ]
+    },
+    {
+      "id": "page",
+      "op": "control.group",
+      "description": "Выдача → карточки → Excel",
+      "config": {
+        "name": "Обход страницы"
+      },
+      "pos": [
+        300,
+        390
+      ],
+      "nodes": [
+        {
+          "id": "page_url",
+          "op": "proc.field",
+          "description": "Адрес страницы выдачи",
+          "config": {
+            "data": "${crawl}",
+            "key": "next_url",
+            "save_to": "current_search_url"
+          },
+          "pos": [
+            300,
+            0
+          ]
+        },
+        {
+          "id": "search_open",
+          "op": "web.goto",
+          "description": "Открыть выдачу Циан",
+          "config": {
+            "url": "${current_search_url}",
+            "timeout_ms": 45000
+          },
+          "pos": [
+            300,
+            130
+          ]
+        },
+        {
+          "id": "search_pause",
+          "op": "wait.time",
+          "description": "Дать странице загрузиться",
+          "config": {
+            "ms": "${pause_ms}"
+          },
+          "pos": [
+            300,
+            260
+          ]
+        },
+        {
+          "id": "search_links",
+          "op": "web.js",
+          "description": "Собрать уникальные ссылки и найти следующую страницу",
+          "config": {
+            "code": "(async function collectSearch(crawl, offer_limit) {\n  const blocked = () => /captcha|доступ ограничен|подтвердите.*человек|проверка безопасности/i.test(document.title + ' ' + location.pathname)\n  let cards = []\n  const until = Date.now() + 20000\n  while (Date.now() < until) {\n    if (blocked()) throw new Error('Циан запросил проверку доступа. Откройте профиль, пройдите проверку и повторите запуск.')\n    cards = [...document.querySelectorAll('[data-name=\"CardComponent\"]')]\n    if (!cards.length) cards = [...document.querySelectorAll('[data-testid=\"offer-card\"]')]\n    if (cards.length) break\n    if (document.querySelector('[data-name=\"EmptySearchResults\"], [data-name=\"EmptyOffers\"]')) break\n    await new Promise(resolve => setTimeout(resolve, 250))\n  }\n  if (!cards.length) throw new Error('В выдаче нет карточек: проверьте фильтры, доступ к Циан и структуру страницы.')\n  const seen = new Set(crawl.seen)\n  const queue = []\n  const remaining = offer_limit - crawl.rows.length\n  for (const card of cards) {\n    for (const link of card.querySelectorAll('a[href]')) {\n      const url = new URL(link.getAttribute('href'), location.href)\n      if (url.protocol !== 'https:' || !/(^|\\.)cian\\.ru$/i.test(url.hostname) || !/^\\/(sale|rent)\\/[a-z_]+\\/\\d+\\/?$/i.test(url.pathname)) continue\n      url.search = ''; url.hash = ''\n      const canonical = url.href.replace(/\\/?$/, '/')\n      const key = url.pathname.replace(/\\/?$/, '/')\n      if (seen.has(key) || queue.length >= remaining) continue\n      seen.add(key)\n      queue.push(canonical)\n    }\n  }\n  // Следуем только реально существующей ссылке пагинации, сохраняя фильтры поиска.\n  const current = Number(new URL(location.href).searchParams.get('p') || 1)\n  const pagination = document.querySelector('[data-name=\"Pagination\"], [data-name=\"PaginationSection\"]')\n  const next = [...(pagination?.querySelectorAll('a[href]') ?? [])].map(link => new URL(link.getAttribute('href'), location.href))\n    .find(url => /(^|\\.)cian\\.ru$/i.test(url.hostname) && url.protocol === 'https:' && url.pathname === '/cat.php' && Number(url.searchParams.get('p')) === current + 1)\n  return { ...crawl, page_count: crawl.page_count + 1, seen: [...seen], queue, next_url: next?.href ?? null }\n})(crawl, offer_limit);",
+            "inject": [
+              "crawl",
+              "offer_limit"
+            ],
+            "save_to": "crawl"
+          },
+          "pos": [
+            300,
+            390
+          ]
+        },
+        {
+          "id": "queue",
+          "op": "proc.field",
+          "description": "Ссылки этой страницы",
+          "config": {
+            "data": "${crawl}",
+            "key": "queue",
+            "save_to": "offer_urls"
+          },
+          "pos": [
+            300,
+            520
+          ]
+        },
+        {
+          "id": "offers_loop",
+          "op": "control.for_data",
+          "description": "Обойти карточки",
+          "config": {
+            "data": "${offer_urls}",
+            "item_to": "offer_url",
+            "index_to": "offer_index"
+          },
+          "pos": [
+            300,
+            650
+          ]
+        },
+        {
+          "id": "offer_open",
+          "op": "web.goto",
+          "description": "Открыть объявление",
+          "config": {
+            "url": "${offer_url}",
+            "timeout_ms": 45000
+          },
+          "pos": [
+            300,
+            780
+          ]
+        },
+        {
+          "id": "offer_pause",
+          "op": "wait.time",
+          "description": "Пауза между карточками",
+          "config": {
+            "ms": "${pause_ms}"
+          },
+          "pos": [
+            300,
+            910
+          ]
+        },
+        {
+          "id": "offer_read",
+          "op": "web.js",
+          "description": "Поля объявления и статус входа в аккаунт",
+          "config": {
+            "code": "(async function extractOffer(offer_url, require_login) {\n  let data, offer, product\n  const until = Date.now() + 20000\n  while (Date.now() < until) {\n    if (/captcha|доступ ограничен|подтвердите.*человек|проверка безопасности/i.test(document.title + ' ' + location.pathname)) {\n      throw new Error('Циан запросил проверку доступа. Пройдите её в профиле и повторите запуск.')\n    }\n    const entries = window._cianConfig?.['frontend-offer-card'] ?? []\n    data = [...entries].reverse().find(entry => entry.key === 'defaultState')?.value?.offerData\n    offer = data?.offer\n    for (const script of document.querySelectorAll('script[type=\"application/ld+json\"]')) {\n      try {\n        const parsed = JSON.parse(script.textContent)\n        const items = Array.isArray(parsed) ? parsed : (parsed['@graph'] ?? [parsed])\n        product = items.find(item => [].concat(item['@type'] ?? []).includes('Product')) ?? product\n      } catch { /* У страницы может быть несколько независимых блоков разметки. */ }\n    }\n    if (offer || product) break\n    await new Promise(resolve => setTimeout(resolve, 250))\n  }\n  if (!offer && !product) throw new Error('Карточка объявления не загрузилась или больше недоступна.')\n  const expected = new URL(offer_url).pathname.match(/\\/(\\d+)\\/?$/)?.[1]\n  const actual = offer?.cianId ?? offer?.id ?? product?.sku\n  if (actual && String(actual) !== expected) throw new Error('Циан открыл другую карточку: результат не сохранён.')\n  const auth_status = typeof data?.user?.isAuthenticated === 'boolean'\n    ? (data.user.isAuthenticated ? 'authenticated' : 'guest')\n    : (document.querySelector('[data-name=\"LoginButton\"]') ? 'guest' : 'unknown')\n  if (require_login && auth_status !== 'authenticated') throw new Error('Вход в Циан не подтверждён. Войдите вручную в этом профиле и повторите запуск.')\n  const text = selector => document.querySelector(selector)?.textContent.trim() ?? ''\n  const quotedPrice = [].concat(product?.offers ?? [])[0]\n  const terms = offer?.bargainTerms\n  const price = terms?.prices?.rur ?? (['rur', 'rub'].includes(terms?.currency?.toLowerCase()) ? terms.price : null)\n    ?? (quotedPrice?.priceCurrency === 'RUB' ? quotedPrice.price : null)\n  const photos = (offer?.photos ?? [].concat(product?.image ?? [])).map(photo => typeof photo === 'string' ? photo : photo.fullUrl)\n    .filter(url => typeof url === 'string' && /^https?:\\/\\//.test(url))\n  // Только номера, уже отданные странице для этого объявления; скрытые контакты остаются пустыми.\n  const phones = (offer?.phones ?? []).map(phone => {\n    const number = String(phone.number ?? '')\n    if (!/^[+\\d\\s()-]+$/.test(number)) return ''\n    const full = (number.startsWith('+') ? number : String(phone.countryCode ?? '') + number).replace(/\\D/g, '')\n    return full.length >= 10 && full.length <= 15 ? '+' + full : ''\n  }).filter(Boolean)\n  return {\n    url: offer_url,\n    category: offer?.category ?? new URL(offer_url).pathname.split('/').slice(1, 3).join('/'),\n    title: offer?.title || text('[data-name=\"OfferTitleNew\"], [data-name=\"OfferTitle\"], h1') || product?.name || '',\n    price_rub: price === null || price === undefined || price === '' || !Number.isFinite(Number(price)) ? '' : Number(price),\n    address: offer?.geo?.address?.map(item => item.shortName || item.fullName || item.name).filter(Boolean).join(', ')\n      || document.querySelector('meta[property=\"og:description\"]')?.content || '',\n    created_at: offer?.creationDate ?? '',\n    published_at: offer?.publicationDate ? new Date(offer.publicationDate * 1000).toISOString() : product?.datePublished ?? '',\n    description: offer?.description ?? product?.description ?? text('[data-name=\"Description\"]'),\n    photos: [...new Set(photos)].join('\\n'),\n    author: data?.agent?.name || data?.company?.name || '',\n    phones: [...new Set(phones)].join('; '),\n    auth_status,\n  }\n})(offer_url, require_login);",
+            "inject": [
+              "offer_url",
+              "require_login"
+            ],
+            "save_to": "offer"
+          },
+          "pos": [
+            300,
+            1040
+          ]
+        },
+        {
+          "id": "save_row",
+          "op": "control.group",
+          "description": "Записать объявление в таблицу",
+          "config": {
+            "name": "Сохранение строки"
+          },
+          "pos": [
+            300,
+            1170
+          ],
+          "nodes": [
+            {
+              "id": "field_url",
+              "op": "proc.field",
+              "description": "url",
+              "config": {
+                "data": "${offer}",
+                "key": "url",
+                "save_to": "url"
+              },
+              "pos": [
+                300,
+                0
+              ]
+            },
+            {
+              "id": "field_category",
+              "op": "proc.field",
+              "description": "category",
+              "config": {
+                "data": "${offer}",
+                "key": "category",
+                "save_to": "category"
+              },
+              "pos": [
+                300,
+                130
+              ]
+            },
+            {
+              "id": "field_title",
+              "op": "proc.field",
+              "description": "title",
+              "config": {
+                "data": "${offer}",
+                "key": "title",
+                "save_to": "title"
+              },
+              "pos": [
+                300,
+                260
+              ]
+            },
+            {
+              "id": "field_price_rub",
+              "op": "proc.field",
+              "description": "price_rub",
+              "config": {
+                "data": "${offer}",
+                "key": "price_rub",
+                "save_to": "price_rub"
+              },
+              "pos": [
+                300,
+                390
+              ]
+            },
+            {
+              "id": "field_address",
+              "op": "proc.field",
+              "description": "address",
+              "config": {
+                "data": "${offer}",
+                "key": "address",
+                "save_to": "address"
+              },
+              "pos": [
+                300,
+                520
+              ]
+            },
+            {
+              "id": "field_created_at",
+              "op": "proc.field",
+              "description": "created_at",
+              "config": {
+                "data": "${offer}",
+                "key": "created_at",
+                "save_to": "created_at"
+              },
+              "pos": [
+                300,
+                650
+              ]
+            },
+            {
+              "id": "field_published_at",
+              "op": "proc.field",
+              "description": "published_at",
+              "config": {
+                "data": "${offer}",
+                "key": "published_at",
+                "save_to": "published_at"
+              },
+              "pos": [
+                300,
+                780
+              ]
+            },
+            {
+              "id": "field_description",
+              "op": "proc.field",
+              "description": "description",
+              "config": {
+                "data": "${offer}",
+                "key": "description",
+                "save_to": "description"
+              },
+              "pos": [
+                300,
+                910
+              ]
+            },
+            {
+              "id": "field_photos",
+              "op": "proc.field",
+              "description": "photos",
+              "config": {
+                "data": "${offer}",
+                "key": "photos",
+                "save_to": "photos"
+              },
+              "pos": [
+                300,
+                1040
+              ]
+            },
+            {
+              "id": "field_author",
+              "op": "proc.field",
+              "description": "author",
+              "config": {
+                "data": "${offer}",
+                "key": "author",
+                "save_to": "author"
+              },
+              "pos": [
+                300,
+                1170
+              ]
+            },
+            {
+              "id": "field_phones",
+              "op": "proc.field",
+              "description": "phones",
+              "config": {
+                "data": "${offer}",
+                "key": "phones",
+                "save_to": "phones"
+              },
+              "pos": [
+                300,
+                1300
+              ]
+            },
+            {
+              "id": "field_auth_status",
+              "op": "proc.field",
+              "description": "auth_status",
+              "config": {
+                "data": "${offer}",
+                "key": "auth_status",
+                "save_to": "auth_status"
+              },
+              "pos": [
+                300,
+                1430
+              ]
+            },
+            {
+              "id": "save_xlsx",
+              "op": "data.save_excel",
+              "description": "Записать строку Excel",
+              "config": {
+                "file_name": "${output_name}-${acc_id}",
+                "columns": [
+                  "url",
+                  "category",
+                  "title",
+                  "price_rub",
+                  "address",
+                  "created_at",
+                  "published_at",
+                  "description",
+                  "photos",
+                  "author",
+                  "phones",
+                  "auth_status"
+                ]
+              },
+              "pos": [
+                300,
+                1560
+              ]
+            }
+          ],
+          "edges": [
+            {
+              "from": "field_url",
+              "to": "field_category",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_category",
+              "to": "field_title",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_title",
+              "to": "field_price_rub",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_price_rub",
+              "to": "field_address",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_address",
+              "to": "field_created_at",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_created_at",
+              "to": "field_published_at",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_published_at",
+              "to": "field_description",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_description",
+              "to": "field_photos",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_photos",
+              "to": "field_author",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_author",
+              "to": "field_phones",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_phones",
+              "to": "field_auth_status",
+              "port": "next",
+              "to_port": "in"
+            },
+            {
+              "from": "field_auth_status",
+              "to": "save_xlsx",
+              "port": "next",
+              "to_port": "in"
+            }
+          ]
+        },
+        {
+          "id": "remember",
+          "op": "web.js",
+          "description": "Добавить объявление в результат",
+          "config": {
+            "code": "(function appendOffer(crawl, offer) {\n  return { ...crawl, rows: [...crawl.rows, offer] }\n})(crawl, offer);",
+            "inject": [
+              "crawl",
+              "offer"
+            ],
+            "save_to": "crawl"
+          },
+          "pos": [
+            300,
+            1300
+          ]
+        },
+        {
+          "id": "continue",
+          "op": "web.js",
+          "description": "Есть следующая страница и не достигнут лимит?",
+          "config": {
+            "code": "(function shouldContinue(crawl, offer_limit) {\n  return Boolean(crawl.next_url) && crawl.rows.length < offer_limit\n})(crawl, offer_limit);",
+            "inject": [
+              "crawl",
+              "offer_limit"
+            ],
+            "save_to": "crawl_more"
+          },
+          "pos": [
+            650,
+            780
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "page_url",
+          "to": "search_open",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "search_open",
+          "to": "search_pause",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "search_pause",
+          "to": "search_links",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "search_links",
+          "to": "queue",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "queue",
+          "to": "offers_loop",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "offers_loop",
+          "to": "offer_open",
+          "port": "body",
+          "to_port": "in"
+        },
+        {
+          "from": "offer_open",
+          "to": "offer_pause",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "offer_pause",
+          "to": "offer_read",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "offer_read",
+          "to": "save_row",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "save_row",
+          "to": "remember",
+          "port": "next",
+          "to_port": "in"
+        },
+        {
+          "from": "remember",
+          "to": "offers_loop",
+          "port": "next",
+          "to_port": "loop"
+        },
+        {
+          "from": "offers_loop",
+          "to": "continue",
+          "port": "next",
+          "to_port": "in"
+        }
+      ]
+    },
+    {
+      "id": "more",
+      "op": "control.if",
+      "description": "Продолжить обход?",
+      "config": {
+        "variable": "crawl_more",
+        "condition": "eq",
+        "value": true
+      },
+      "pos": [
+        300,
+        520
+      ]
+    },
+    {
+      "id": "next_pause",
+      "op": "wait.time",
+      "description": "Пауза перед следующей страницей",
+      "config": {
+        "ms": "${pause_ms}"
+      },
+      "pos": [
+        460,
+        650
+      ]
+    },
+    {
+      "id": "finish",
+      "op": "control.break",
+      "description": "Выдача закончилась или достигнут лимит",
+      "config": {},
+      "pos": [
+        140,
+        650
+      ]
+    },
+    {
+      "id": "summary",
+      "op": "web.js",
+      "description": "Итог обхода и проверки сессии",
+      "config": {
+        "code": "(function summarize(crawl, output_name, acc_id, task_id) {\n  if (!crawl.rows.length) throw new Error('Обход не дал объявлений: проверьте выдачу и фильтры.')\n  return {\n    pages: crawl.page_count, count: crawl.rows.length,\n    authenticated: crawl.rows.every(row => row.auth_status === 'authenticated'),\n    auth_statuses: [...new Set(crawl.rows.map(row => row.auth_status))],\n    file_name: `${output_name}-${acc_id}${task_id ? '-' + task_id : ''}.xlsx`,\n    rows: crawl.rows,\n  }\n})(crawl, output_name, acc_id, task_id);",
+        "inject": [
+          "crawl",
+          "output_name",
+          "acc_id",
+          "task_id"
+        ],
+        "save_to": "summary"
+      },
+      "pos": [
+        760,
+        390
+      ]
+    },
+    {
+      "id": "result_rows",
+      "op": "proc.field",
+      "description": "Все собранные объявления",
+      "config": {
+        "data": "${summary}",
+        "key": "rows",
+        "save_to": "offers"
+      },
+      "pos": [
+        760,
+        520
+      ]
+    },
+    {
+      "id": "export",
+      "op": "proc.vars",
+      "description": "Показать результат запуска",
+      "config": {
+        "mode": "export",
+        "names": [
+          "summary",
+          "offers"
+        ]
+      },
+      "pos": [
+        760,
+        650
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "init",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "init",
+      "to": "pages_loop",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "pages_loop",
+      "to": "page",
+      "port": "body",
+      "to_port": "in"
+    },
+    {
+      "from": "page",
+      "to": "more",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "more",
+      "to": "next_pause",
+      "port": "true",
+      "to_port": "in"
+    },
+    {
+      "from": "next_pause",
+      "to": "pages_loop",
+      "port": "next",
+      "to_port": "loop"
+    },
+    {
+      "from": "more",
+      "to": "finish",
+      "port": "false",
+      "to_port": "in"
+    },
+    {
+      "from": "pages_loop",
+      "to": "summary",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "summary",
+      "to": "result_rows",
+      "port": "next",
+      "to_port": "in"
+    },
+    {
+      "from": "result_rows",
+      "to": "export",
+      "port": "next",
+      "to_port": "in"
+    }
+  ]
+}

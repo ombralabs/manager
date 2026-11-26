@@ -5,8 +5,10 @@ This product includes software developed at Ombra Labs
 (https://github.com/ombralabs).
 
 License:
-This repository is licensed under the GNU General Public License v3.0 only
-(GPL-3.0-only). See the LICENSE file for the full text.
+This repository — including the desktop application and the vendored
+`vendor/ombra-engine/crates/ombra-humanize` crate — is licensed under the
+GNU General Public License v3.0 only (GPL-3.0-only). See the LICENSE file
+for the full text.
 
 Trademarks:
 The "Ombra" name, the Ombra logo, and related marks are trademarks of

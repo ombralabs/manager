@@ -1,0 +1,155 @@
+{
+  "format": "ombra-flow/1",
+  "name": "CSV sign-in",
+  "group": "Examples",
+  "remark": "Sign in to a test form using login and pass columns from a task table, or parameters. Set site to your test site: the example expects /login and the #user, #pass, #go and #hello selectors. Adapt them in the editor. The result is a greeting and screenshot. Supply passwords through parameters, never literal node fields: literal fields appear in the journal.",
+  "variables": [
+    {
+      "name": "site",
+      "type": "string",
+      "default": "http://flow.ombra.test",
+      "description": "Site with a /login page"
+    },
+    {
+      "name": "login",
+      "type": "string",
+      "default": "",
+      "description": "The login column in the task table"
+    },
+    {
+      "name": "pass",
+      "type": "string",
+      "default": "",
+      "description": "The pass column in the task table"
+    }
+  ],
+  "settings": {
+    "after_tabs": "clear",
+    "after_browser": "quit"
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "op": "start"
+    },
+    {
+      "id": "open",
+      "op": "web.goto",
+      "description": "Sign-in page",
+      "config": {
+        "url": "${site}/login"
+      }
+    },
+    {
+      "id": "user",
+      "op": "web.input",
+      "description": "Username",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "#user"
+        },
+        "content": "${login}",
+        "interval_ms": 20
+      }
+    },
+    {
+      "id": "secret",
+      "op": "web.input",
+      "description": "Password",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "#pass"
+        },
+        "content": "${pass}",
+        "interval_ms": 20
+      }
+    },
+    {
+      "id": "go",
+      "op": "web.click",
+      "description": "Sign in",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "#go"
+        }
+      }
+    },
+    {
+      "id": "wait",
+      "op": "wait.element",
+      "description": "Account page opened",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "#hello"
+        },
+        "timeout_ms": 15000
+      }
+    },
+    {
+      "id": "hello",
+      "op": "data.element",
+      "description": "Greeting",
+      "config": {
+        "target": {
+          "by": "css",
+          "selector": "#hello"
+        },
+        "save_to": "greeting"
+      }
+    },
+    {
+      "id": "shot",
+      "op": "web.screenshot",
+      "description": "Account screenshot"
+    },
+    {
+      "id": "out",
+      "op": "proc.vars",
+      "description": "Result",
+      "config": {
+        "mode": "export",
+        "names": [
+          "greeting"
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "open"
+    },
+    {
+      "from": "open",
+      "to": "user"
+    },
+    {
+      "from": "user",
+      "to": "secret"
+    },
+    {
+      "from": "secret",
+      "to": "go"
+    },
+    {
+      "from": "go",
+      "to": "wait"
+    },
+    {
+      "from": "wait",
+      "to": "hello"
+    },
+    {
+      "from": "hello",
+      "to": "shot"
+    },
+    {
+      "from": "shot",
+      "to": "out"
+    }
+  ]
+}
