@@ -43,8 +43,6 @@ pub(crate) fn signal_ignored(signal: libc::c_int) -> bool {
 /// Предел macOS для `RLIMIT_NOFILE` (`OPEN_MAX`): выше `setrlimit` отвечает EINVAL.
 #[cfg(target_os = "macos")]
 const OPEN_MAX: u64 = 10_240;
-#[cfg(all(unix, not(target_os = "macos")))]
-const OPEN_MAX: u64 = u64::MAX;
 
 /// Поднимает мягкий лимит открытых файлов до `want`, но не выше жёсткого лимита и `OPEN_MAX`.
 /// У приложений из Finder мягкий лимит 256: на нескольких профилях прослойка упёрлась бы в `EMFILE`.
@@ -55,7 +53,10 @@ pub fn raise_fd_limit(want: u64) -> io::Result<u64> {
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
         return Err(io::Error::last_os_error());
     }
+    #[cfg(target_os = "macos")]
     let target = want.min(limit.rlim_max).min(OPEN_MAX);
+    #[cfg(not(target_os = "macos"))]
+    let target = want.min(limit.rlim_max);
     if limit.rlim_cur >= target {
         return Ok(limit.rlim_cur);
     }
