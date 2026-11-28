@@ -27,3 +27,7 @@ Run the relevant checks locally before pushing:
 - This repository (including `vendor/ombra-engine/crates/ombra-humanize`) is public and licensed under **`GPL-3.0-only`**.
 - Ombra Manager must remain 100% local and autonomous — do not introduce mandatory cloud account sign-in, external licensing gates, or proprietary components.
 - Never commit secrets, credentials, proprietary engine code, or private local filesystem paths/internal hostnames.
+
+## Releases
+
+- **Release titles use the version only.** Name each GitHub Release with just the version number (for example, `1.2.4`, without a product prefix or subtitle); the corresponding git tag uses `v<version>` (for example, `v1.2.4`).
